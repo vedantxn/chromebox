@@ -20,22 +20,22 @@ type Spec struct {
 // instead of hanging it.
 const bootArgs = "console=ttyS0 reboot=k panic=1"
 
-// Create makes the VM's directory and gives it a private, writable copy of the
-// base rootfs. The copy is sparse, so only blocks in use take disk space.
-func Create(p Paths) error {
+// Create makes the VM's directory and gives it a private, writable clone of
+// the golden image. The clone is copy-on-write, so it is instant.
+func Create(p Paths, image string) error {
 	if err := os.MkdirAll(p.Dir, 0o755); err != nil {
 		return err
 	}
-	out, err := exec.Command("cp", "--sparse=always", "--reflink=auto", BaseRootfsPath, p.Rootfs()).CombinedOutput()
+	out, err := exec.Command("cp", "--sparse=always", "--reflink=auto", ImagePath(image), p.Rootfs()).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("copy rootfs: %w: %s", err, out)
 	}
 	return nil
 }
 
-// Boot configures a fresh Firecracker process and starts the guest: describe
-// the machine first, then start it.
-func Boot(ctx context.Context, c *firecracker.Client, p Paths, s Spec) error {
+// Configure describes the machine to a fresh Firecracker process: kernel,
+// disk, CPU and memory. Nothing runs until the caller sends InstanceStart.
+func Configure(ctx context.Context, c *firecracker.Client, p Paths, s Spec) error {
 	if err := c.PutBootSource(ctx, firecracker.BootSource{
 		KernelImagePath: KernelPath,
 		BootArgs:        bootArgs,
@@ -49,11 +49,8 @@ func Boot(ctx context.Context, c *firecracker.Client, p Paths, s Spec) error {
 	}); err != nil {
 		return err
 	}
-	if err := c.PutMachineConfig(ctx, firecracker.MachineConfig{
+	return c.PutMachineConfig(ctx, firecracker.MachineConfig{
 		VCPUCount:  s.VCPUs,
 		MemSizeMiB: s.MemMiB,
-	}); err != nil {
-		return err
-	}
-	return c.StartInstance(ctx)
+	})
 }
