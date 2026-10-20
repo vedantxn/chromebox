@@ -1,0 +1,12 @@
+# Private planning docs (office-hours sessions are never committed)
+docs/office-hours/
+
+# Build output
+/bin/
+
+# VM artifacts, in case any land in the repo
+*.ext4
+vmlinux*
+*.mem
+*.vmstate
+*.sock
