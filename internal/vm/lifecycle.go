@@ -18,6 +18,7 @@ type Spec struct {
 	VCPUs  int
 	MemMiB int
 	Net    *netsetup.Net // nil: the VM has no network
+	Vsock  bool          // add a vsock device for the guest agent
 }
 
 // bootArgs: console=ttyS0 sends kernel output to the serial port (Firecracker's
@@ -74,10 +75,15 @@ func Configure(ctx context.Context, c *firecracker.Client, p Paths, s Spec) erro
 	}
 	if err := c.PutDrive(ctx, firecracker.Drive{
 		DriveID:      "rootfs",
-		PathOnHost:   p.Rootfs(),
+		PathOnHost:   DrivePath, // the VM's own disk, bound there by StartProcess
 		IsRootDevice: true,
 	}); err != nil {
 		return err
+	}
+	if s.Vsock {
+		if err := c.PutVsock(ctx, firecracker.Vsock{GuestCID: 3, UDSPath: p.VsockSock()}); err != nil {
+			return err
+		}
 	}
 	return c.PutMachineConfig(ctx, firecracker.MachineConfig{
 		VCPUCount:  s.VCPUs,
@@ -168,13 +174,17 @@ func Restore(ctx context.Context, p Paths, sw *timing.Stopwatch) (*firecracker.C
 		return nil, err
 	}
 	sw.Lap("firecracker API ready")
-	if err := c.LoadSnapshot(ctx, firecracker.SnapshotLoad{
+	load := firecracker.SnapshotLoad{
 		SnapshotPath: p.Vmstate(),
 		MemBackend:   firecracker.MemBackend{BackendType: "File", BackendPath: p.Mem()},
 		ResumeVM:     true,
 		// Off by default: see docs/learn/m2.md (C5) for why.
 		ClockRealtime: os.Getenv("CHROMEBOX_CLOCK_REALTIME") != "",
-	}); err != nil {
+	}
+	if _, img, err := ImageOf(p); err == nil && img.Vsock {
+		load.VsockOverride = &firecracker.VsockOverride{UDSPath: p.VsockSock()}
+	}
+	if err := c.LoadSnapshot(ctx, load); err != nil {
 		return nil, err
 	}
 	sw.Lap("snapshot loaded")

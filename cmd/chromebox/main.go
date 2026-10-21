@@ -7,6 +7,9 @@
 //	chromebox resume <id>             start them again
 //	chromebox snapshot <id> [nosync]  pause the VM and save vmstate, memory and disk; leaves it paused
 //	chromebox restore <id>            bring the VM back from its snapshot, running
+//	chromebox base build <name> <image>  boot an image, let it settle, snapshot it as a base
+//	chromebox clone <id> <base> net=N  make a VM from a base snapshot with network index N
+//	chromebox bench-clone <n> <base>   clone n VMs one at a time and summarize the timings
 //	chromebox kill <id>               stop the VM's Firecracker process
 //	chromebox gateway [listen]        run the CDP proxy (on the gateway host; default :9222)
 //	chromebox apply-delta <file>      target side of migrate: write byte ranges from stdin into a file
@@ -30,9 +33,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vedantxn/chromebox/internal/base"
 	"github.com/vedantxn/chromebox/internal/blockdiff"
 	"github.com/vedantxn/chromebox/internal/firecracker"
 	"github.com/vedantxn/chromebox/internal/gateway"
+	"github.com/vedantxn/chromebox/internal/guestctl"
 	"github.com/vedantxn/chromebox/internal/migrate"
 	"github.com/vedantxn/chromebox/internal/node"
 	"github.com/vedantxn/chromebox/internal/remote"
@@ -87,6 +92,12 @@ func main() {
 		err = restoreCmd(ctx, p)
 	case "kill":
 		err = killCmd(ctx, p)
+	case "guest-ping":
+		err = guestPing(ctx, p)
+	case "base":
+		err = baseCmd(ctx, os.Args[2:])
+	case "clone":
+		err = cloneCmd(ctx, p, os.Args[3:])
 	case "gateway":
 		err = runGateway(arg)
 	case "apply-delta":
@@ -118,6 +129,11 @@ func main() {
 		}
 		if n, err = strconv.Atoi(arg); err == nil {
 			err = benchMigrate(ctx, n, os.Args[3], time.Duration(gap)*time.Second, image)
+		}
+	case "bench-clone":
+		var n int
+		if n, err = strconv.Atoi(arg); err == nil && len(os.Args) > 3 {
+			err = benchClone(ctx, n, os.Args[3])
 		}
 	case "bench-boot", "bench-snapshot", "bench-restore":
 		var n int
@@ -158,7 +174,7 @@ func boot(ctx context.Context, p vm.Paths, image string, netIndex int) (*timing.
 		return nil, err
 	}
 	sw.Lap("disk cloned")
-	spec := vm.Spec{VCPUs: img.VCPUs, MemMiB: img.MemMiB}
+	spec := vm.Spec{VCPUs: img.VCPUs, MemMiB: img.MemMiB, Vsock: img.Vsock}
 	if netIndex > 0 {
 		if spec.Net, err = vm.AttachNet(p, netIndex); err != nil {
 			return nil, err
@@ -192,7 +208,7 @@ func boot(ctx context.Context, p vm.Paths, image string, netIndex int) (*timing.
 	// Tell the gateway where this VM lives, so agents can reach it.
 	if cfg, err := node.Load(); err != nil {
 		return nil, err
-	} else if cfg != nil && cfg.Gateway != "" && spec.Net != nil {
+	} else if cfg != nil && cfg.Gateway != "" && spec.Net != nil && netIndex != base.Index {
 		if err := gateway.SetRoute(ctx, remote.New(cfg.Gateway), spec.Net.Block(), cfg.Tunnel()); err != nil {
 			return nil, fmt.Errorf("gateway route: %w", err)
 		}
@@ -315,6 +331,65 @@ func runGateway(listen string) error {
 	srv := &http.Server{Addr: listen, Handler: gateway.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("CDP proxy listening on %s", listen)
 	return srv.ListenAndServe()
+}
+
+// guestPing asks the guest agent over vsock for a random sample and its clock.
+func guestPing(ctx context.Context, p vm.Paths) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	r, err := guestctl.Ping(ctx, p.VsockSock())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("guest random sample %s   guest clock is %+d ms from this node's\n",
+		r.Rand, (r.UnixNano-time.Now().UnixNano())/int64(time.Millisecond))
+	return nil
+}
+
+// baseCmd: `base build <name> <image>`.
+func baseCmd(ctx context.Context, args []string) error {
+	if len(args) != 3 || args[0] != "build" {
+		return fmt.Errorf("usage: chromebox base build <name> <image>")
+	}
+	sw := timing.Start()
+	if err := base.Build(ctx, args[1], args[2], 3*time.Second, sw); err != nil {
+		return err
+	}
+	sw.Print(os.Stdout)
+	m, err := base.Read(args[1])
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\nbase %s: image %s, %d vCPU, %d MiB, disk sha256 %s\n", m.Name, m.Image, m.VCPUs, m.MemMiB, m.DiskSHA256[:16])
+	return nil
+}
+
+// cloneCmd: `clone <id> <base> net=N`.
+func cloneCmd(ctx context.Context, p vm.Paths, args []string) error {
+	if len(args) != 2 || !strings.HasPrefix(args[1], "net=") {
+		return fmt.Errorf("usage: chromebox clone <id> <base> net=N")
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(args[1], "net="))
+	if err != nil {
+		return err
+	}
+	if err := base.Load(args[0]); err != nil {
+		return err
+	}
+	sw := timing.Start()
+	if err := base.Clone(ctx, p, args[0], n, sw); err != nil {
+		return err
+	}
+	// Tell the gateway where this VM lives, if there is one.
+	if cfg, _ := node.Load(); cfg != nil && cfg.Gateway != "" {
+		nn, _ := vm.NetOf(p)
+		if err := gateway.SetRoute(ctx, remote.New(cfg.Gateway), nn.Block(), cfg.Tunnel()); err != nil {
+			return fmt.Errorf("gateway route: %w", err)
+		}
+		sw.Lap("gateway route set")
+	}
+	sw.Print(os.Stdout)
+	return sw.Save(p.Timings())
 }
 
 func status(ctx context.Context, p vm.Paths) error {
@@ -515,5 +590,29 @@ func benchMigrate(ctx context.Context, n int, host string, gap time.Duration, im
 	remote.print("TOTAL (restore on target)")
 	d := timing.Summarize(downtimes)
 	fmt.Printf("\nDOWNTIME (paused -> running on target), n=%d:  p50 %.1f ms   p95 %.1f ms   max %.1f ms\n", len(downtimes), ms(d.P50), ms(d.P95), ms(d.Max))
+	return nil
+}
+
+// benchClone clones n VMs of a base, one at a time, and kills each once its
+// browser answers.
+func benchClone(ctx context.Context, n int, name string) error {
+	if err := base.Load(name); err != nil {
+		return err
+	}
+	s := newSamples()
+	for i := 1; i <= n; i++ {
+		p := vm.PathsFor(fmt.Sprintf("bc-%d", i))
+		_ = os.RemoveAll(p.Dir)
+		sw := timing.Start()
+		if err := base.Clone(ctx, p, name, 20, sw); err != nil {
+			return fmt.Errorf("clone %d: %w", i, err)
+		}
+		if err := vm.Kill(p); err != nil {
+			return err
+		}
+		_ = os.RemoveAll(p.Dir)
+		s.add(sw)
+	}
+	s.print("TOTAL (start -> answering)")
 	return nil
 }

@@ -20,11 +20,14 @@ type Image struct {
 	// Counter is true for the counter guest, whose count lines let the host
 	// check that a restored VM continued rather than rebooted.
 	Counter bool
+	// Vsock images run the guest agent (cmd/chromebox-guest) and get a vsock
+	// device.
+	Vsock bool
 }
 
 var images = map[string]Image{
 	"counter": {VCPUs: 1, MemMiB: 256, Ready: countLine, Counter: true},
-	"chrome":  {VCPUs: 2, MemMiB: 1024, Ready: regexp.MustCompile(`(?m)^chrome ready (.*)\r?\n`), CDPPort: 9223},
+	"chrome":  {VCPUs: 2, MemMiB: 1024, Ready: regexp.MustCompile(`(?m)^chrome ready (.*)\r?\n`), CDPPort: 9223, Vsock: true},
 }
 
 // LookupImage returns the settings for a golden image by name.

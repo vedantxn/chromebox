@@ -32,6 +32,23 @@ type NetworkInterface struct {
 	HostDevName string `json:"host_dev_name"`
 }
 
+// Vsock is the device that gives the guest a private channel to the host.
+type Vsock struct {
+	GuestCID int    `json:"guest_cid"`
+	UDSPath  string `json:"uds_path"`
+}
+
+// NetworkOverride changes which host TAP device a guest NIC uses on restore.
+type NetworkOverride struct {
+	IfaceID     string `json:"iface_id"`
+	HostDevName string `json:"host_dev_name"`
+}
+
+// VsockOverride changes the host-side socket of the vsock device on restore.
+type VsockOverride struct {
+	UDSPath string `json:"uds_path"`
+}
+
 // InstanceInfo is what GET / reports about the VM.
 type InstanceInfo struct {
 	ID         string `json:"id"`
@@ -65,6 +82,10 @@ type SnapshotLoad struct {
 	// passed since the snapshot (x86 only). Without it the guest clock resumes
 	// where it stopped and is behind by the length of the pause.
 	ClockRealtime bool `json:"clock_realtime,omitempty"`
+	// The device settings a snapshot remembers belong to the VM it came from.
+	// A clone gives its NIC its own TAP and its vsock its own socket here.
+	NetworkOverrides []NetworkOverride `json:"network_overrides,omitempty"`
+	VsockOverride    *VsockOverride    `json:"vsock_override,omitempty"`
 }
 
 type vmState struct {
@@ -88,6 +109,10 @@ func (c *Client) PutDrive(ctx context.Context, d Drive) error {
 
 func (c *Client) PutNetworkInterface(ctx context.Context, n NetworkInterface) error {
 	return c.do(ctx, http.MethodPut, "/network-interfaces/"+n.IfaceID, n, nil)
+}
+
+func (c *Client) PutVsock(ctx context.Context, v Vsock) error {
+	return c.do(ctx, http.MethodPut, "/vsock", v, nil)
 }
 
 func (c *Client) PutMachineConfig(ctx context.Context, m MachineConfig) error {

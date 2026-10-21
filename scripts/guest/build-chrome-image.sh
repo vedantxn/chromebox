@@ -125,7 +125,25 @@ StandardOutput=file:/dev/console
 [Install]
 WantedBy=multi-user.target
 EOF
-for u in chrome chrome-bridge chrome-ready; do
+# The guest agent: the host's channel (over vsock) for giving a restored VM its
+# own address and the right time. Built on the dev machine and copied to the
+# node first: GOOS=linux GOARCH=amd64 go build -o bin/chromebox-guest ./cmd/chromebox-guest
+[[ -f "$HOME/chromebox-guest" ]] || { echo "copy bin/chromebox-guest to ~/chromebox-guest first" >&2; exit 1; }
+sudo install -m 0755 "$HOME/chromebox-guest" "$ROOT/usr/local/bin/chromebox-guest"
+sudo tee "$ROOT/etc/systemd/system/chromebox-guest.service" >/dev/null <<'EOF'
+[Unit]
+Description=chromebox guest agent (vsock)
+
+[Service]
+ExecStart=/usr/local/bin/chromebox-guest
+Restart=always
+StandardOutput=file:/dev/console
+StandardError=file:/dev/console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+for u in chrome chrome-bridge chrome-ready chromebox-guest; do
   sudo ln -sf "/etc/systemd/system/$u.service" "$ROOT/etc/systemd/system/multi-user.target.wants/$u.service"
 done
 

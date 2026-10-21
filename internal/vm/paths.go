@@ -29,7 +29,16 @@ func (p Paths) Socket() string    { return filepath.Join(p.Dir, "fc.sock") }
 func (p Paths) PIDFile() string   { return filepath.Join(p.Dir, "fc.pid") }
 func (p Paths) SerialLog() string { return filepath.Join(p.Dir, "serial.log") }
 func (p Paths) Rootfs() string    { return filepath.Join(p.Dir, "rootfs.ext4") }
-func (p Paths) Timings() string   { return filepath.Join(p.Dir, "timings.json") }
+
+// VsockSock is the Unix socket through which the host reaches the guest's
+// vsock ports (see package guestctl).
+func (p Paths) VsockSock() string { return filepath.Join(p.Dir, "v.sock") }
+
+// BaseFile records which base snapshot a VM was cloned from. The VM's disk is a
+// copy-on-write clone of that base's disk, which is what lets a migration send
+// only the blocks the VM has written.
+func (p Paths) BaseFile() string { return filepath.Join(p.Dir, "base") }
+func (p Paths) Timings() string  { return filepath.Join(p.Dir, "timings.json") }
 
 // NetFile holds the VM's network index. A snapshot keeps a copy (SnapNet), so
 // the network identity travels with the snapshot to another node.

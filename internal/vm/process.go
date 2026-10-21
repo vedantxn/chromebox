@@ -15,13 +15,56 @@ import (
 	"github.com/vedantxn/chromebox/internal/firecracker"
 )
 
+// DrivePath is where every Firecracker process sees its VM's disk. A snapshot
+// records the disk's path, so if each VM's disk lived at a different path,
+// concurrent clones of one snapshot would all open the same file. Instead each
+// process runs in its own mount namespace in which this one path is bound to
+// that VM's own disk file: the path baked into a snapshot is always valid, and
+// always means "my disk".
+const DrivePath = "/run/chromebox/drive/rootfs.ext4"
+
+// startScript runs as root inside a new mount namespace. It records its own
+// pid (which exec preserves, so the pid file names Firecracker itself), binds
+// the VM's disk onto DrivePath, then drops to the unprivileged user and becomes
+// Firecracker. Firecracker needs no privilege: /dev/kvm is open to all and the
+// TAP device is owned by the user.
+const startScript = `echo $$ > "$1"
+mount --bind "$2" "$3" || exit 1
+exec setpriv --reuid="$4" --regid="$5" --clear-groups --bounding-set=-all --inh-caps=-all -- /usr/local/bin/firecracker --api-sock "$6"`
+
+var driveMountReady bool
+
+// ensureDriveMountPoint creates the empty file DrivePath that disks get bound
+// onto. /run is tmpfs, so it is gone after a reboot and made again here.
+func ensureDriveMountPoint() error {
+	if driveMountReady {
+		return nil
+	}
+	if _, err := os.Stat(DrivePath); err != nil {
+		out, err := exec.Command("sudo", "sh", "-c",
+			"mkdir -p "+driveDir+" && touch "+DrivePath).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("create %s: %w: %s", DrivePath, err, out)
+		}
+	}
+	driveMountReady = true
+	return nil
+}
+
+const driveDir = "/run/chromebox/drive"
+
 // StartProcess launches a Firecracker process for the VM at p and waits until
 // its API socket accepts connections. No VM exists yet at that point: the
-// process is an empty VMM waiting to be configured.
+// process is an empty VMM waiting to be configured or to load a snapshot.
 func StartProcess(ctx context.Context, p Paths) (*firecracker.Client, error) {
-	// A socket file left by a dead process would make Firecracker fail to bind.
-	if err := os.Remove(p.Socket()); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := ensureDriveMountPoint(); err != nil {
 		return nil, err
+	}
+	// Files left by a dead process would make Firecracker fail to bind.
+	for _, f := range []string{p.Socket(), p.VsockSock(), p.PIDFile()} {
+		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 	}
 
 	// Firecracker's stdout is the guest's serial console, so the log holds
@@ -32,7 +75,10 @@ func StartProcess(ctx context.Context, p Paths) (*firecracker.Client, error) {
 	}
 	defer log.Close() // the child keeps its own copy of the descriptor
 
-	cmd := exec.Command("firecracker", "--api-sock", p.Socket())
+	cmd := exec.Command("sudo", "unshare", "--mount", "--propagation", "private", "--",
+		"sh", "-c", startScript, "sh",
+		p.PIDFile(), p.Rootfs(), DrivePath,
+		strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()), p.Socket())
 	cmd.Stdout, cmd.Stderr = log, log
 	// A new session detaches the VM from this CLI and from the SSH session
 	// that ran it, so the VM keeps running after both exit.
@@ -40,13 +86,9 @@ func StartProcess(ctx context.Context, p Paths) (*firecracker.Client, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start firecracker: %w", err)
 	}
-	pid := cmd.Process.Pid
-	if err := os.WriteFile(p.PIDFile(), []byte(strconv.Itoa(pid)), 0o644); err != nil {
-		return nil, err
-	}
 	_ = cmd.Process.Release()
 
-	if err := waitForSocket(ctx, p.Socket(), 2*time.Second); err != nil {
+	if err := waitForSocket(ctx, p.Socket(), 3*time.Second); err != nil {
 		return nil, fmt.Errorf("%w (see %s)", err, p.SerialLog())
 	}
 	return firecracker.New(p.Socket()), nil
