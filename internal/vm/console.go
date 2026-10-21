@@ -37,21 +37,32 @@ func LastCount(p Paths) (int, error) {
 	return strconv.Atoi(string(m[len(m)-1][1]))
 }
 
-// WaitForCount blocks until the guest prints a "count N" line after byte
-// offset from, and returns N. That proves the guest's app is running, not
-// merely that Firecracker accepted a command. On boot from=0; after a restore
-// from is the log size taken beforehand, so old lines don't count.
+// WaitForCount waits for the counter guest to print a "count N" line after
+// byte offset from, and returns N.
 func WaitForCount(ctx context.Context, p Paths, from int64, timeout time.Duration) (int, error) {
+	m, err := WaitForMatch(ctx, p, countLine, from, timeout)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(string(m[1]))
+}
+
+// WaitForMatch blocks until the guest prints a line matching re after byte
+// offset from, and returns the match (the whole line, then each capture
+// group). That proves the guest's app is running, not merely that Firecracker
+// accepted a command. On boot from=0; after a restore from is the log size
+// taken beforehand, so old lines don't count.
+func WaitForMatch(ctx context.Context, p Paths, re *regexp.Regexp, from int64, timeout time.Duration) ([][]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	f, err := os.Open(p.SerialLog())
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer f.Close()
 	if _, err := f.Seek(from, io.SeekStart); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	var acc []byte // everything read since from, so a line split across reads still matches
@@ -60,17 +71,17 @@ func WaitForCount(ctx context.Context, p Paths, from int64, timeout time.Duratio
 		n, err := f.Read(buf)
 		if n > 0 {
 			acc = append(acc, buf[:n]...)
-			if m := countLine.FindSubmatch(acc); m != nil {
-				return strconv.Atoi(string(m[1]))
+			if m := re.FindSubmatch(acc); m != nil {
+				return m, nil
 			}
 		}
 		if err != nil && err != io.EOF {
-			return 0, err
+			return nil, err
 		}
 		if n == 0 {
 			select {
 			case <-ctx.Done():
-				return 0, fmt.Errorf("no count line after offset %d in %s: %w", from, p.SerialLog(), ctx.Err())
+				return nil, fmt.Errorf("no line matching %q after offset %d in %s: %w", re, from, p.SerialLog(), ctx.Err())
 			case <-time.After(time.Millisecond):
 			}
 		}

@@ -9,7 +9,7 @@
 //	chromebox kill <id>               stop the VM's Firecracker process
 //	chromebox migrate <id> <host>     move a running VM to another node (host: ssh target)
 //	chromebox accept <id>             target side of migrate: restore a received snapshot, print a JSON report
-//	chromebox bench-boot <n>          boot n VMs and summarize the timings
+//	chromebox bench-boot <n> [image]  boot n VMs and summarize the timings
 //	chromebox bench-snapshot <n>      take n snapshots of a running VM and summarize
 //	chromebox bench-restore <n>       restore one snapshot n times and summarize
 //	chromebox bench-migrate <n> <host> [gap-seconds]  migrate n freshly booted VMs and summarize
@@ -98,7 +98,11 @@ func main() {
 		}
 		switch cmd {
 		case "bench-boot":
-			err = benchBoot(ctx, n)
+			image := "counter"
+			if len(os.Args) > 3 {
+				image = os.Args[3]
+			}
+			err = benchBoot(ctx, n, image)
 		case "bench-snapshot":
 			err = benchSnapshot(ctx, n)
 		default:
@@ -117,6 +121,10 @@ func main() {
 // "the guest's app printed its first output". The laps are saved in the VM's
 // directory as timings.json.
 func boot(ctx context.Context, p vm.Paths, image string) (*timing.Stopwatch, error) {
+	img, err := vm.LookupImage(image)
+	if err != nil {
+		return nil, err
+	}
 	sw := timing.Start()
 	if err := vm.Create(p, image); err != nil {
 		return nil, err
@@ -127,7 +135,7 @@ func boot(ctx context.Context, p vm.Paths, image string) (*timing.Stopwatch, err
 		return nil, err
 	}
 	sw.Lap("firecracker API ready")
-	if err := vm.Configure(ctx, c, p, vm.Spec{VCPUs: 1, MemMiB: 256}); err != nil {
+	if err := vm.Configure(ctx, c, p, vm.Spec{VCPUs: img.VCPUs, MemMiB: img.MemMiB}); err != nil {
 		return nil, err
 	}
 	sw.Lap("configured")
@@ -135,10 +143,10 @@ func boot(ctx context.Context, p vm.Paths, image string) (*timing.Stopwatch, err
 		return nil, err
 	}
 	sw.Lap("InstanceStart returned")
-	if _, err := vm.WaitForCount(ctx, p, 0, 30*time.Second); err != nil {
+	if _, err := vm.WaitForMatch(ctx, p, img.Ready, 0, 60*time.Second); err != nil {
 		return nil, err
 	}
-	sw.Lap("first count (ready)")
+	sw.Lap("app ready")
 	return sw, sw.Save(p.Timings())
 }
 
@@ -279,13 +287,13 @@ func (s *samples) print(totalLabel string) {
 	fmt.Printf("%-26s %9.1f %9.1f %9.1f\n", totalLabel, ms(x.P50), ms(x.P95), ms(x.Max))
 }
 
-// benchBoot boots n counter VMs one at a time and kills each once it's ready.
-func benchBoot(ctx context.Context, n int) error {
+// benchBoot boots n VMs of an image one at a time and kills each once it's ready.
+func benchBoot(ctx context.Context, n int, image string) error {
 	s := newSamples()
 	for i := 1; i <= n; i++ {
 		p := vm.PathsFor(fmt.Sprintf("bench-%d", i))
 		_ = os.RemoveAll(p.Dir)
-		sw, err := boot(ctx, p, "counter")
+		sw, err := boot(ctx, p, image)
 		if err != nil {
 			return fmt.Errorf("run %d: %w", i, err)
 		}
