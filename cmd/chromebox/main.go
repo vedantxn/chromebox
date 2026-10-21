@@ -1,6 +1,7 @@
 // Command chromebox manages Firecracker microVMs on the node it runs on.
 //
-//	chromebox boot <id> [image]       create a VM from a golden image (default "counter") and boot it
+//	chromebox boot <id> [image] [net=N]  create a VM from a golden image (default "counter") and boot it;
+//	                                  net=N gives it network index N (see internal/netsetup)
 //	chromebox status <id>             ask the VM's Firecracker process for its state
 //	chromebox pause <id>              stop the VM's vCPUs
 //	chromebox resume <id>             start them again
@@ -21,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,12 +46,21 @@ func main() {
 	var err error
 	switch cmd {
 	case "boot":
-		image := "counter"
-		if len(os.Args) > 3 {
-			image = os.Args[3]
+		image, netIndex := "counter", 0
+		for _, a := range os.Args[3:] {
+			if v, ok := strings.CutPrefix(a, "net="); ok {
+				if netIndex, err = strconv.Atoi(v); err != nil {
+					break
+				}
+			} else {
+				image = a
+			}
+		}
+		if err != nil {
+			break
 		}
 		var sw *timing.Stopwatch
-		if sw, err = boot(ctx, p, image); err == nil {
+		if sw, err = boot(ctx, p, image, netIndex); err == nil {
 			sw.Print(os.Stdout)
 		}
 	case "status":
@@ -120,7 +131,7 @@ func main() {
 // boot creates and starts a VM, timing each step from "command started" to
 // "the guest's app printed its first output". The laps are saved in the VM's
 // directory as timings.json.
-func boot(ctx context.Context, p vm.Paths, image string) (*timing.Stopwatch, error) {
+func boot(ctx context.Context, p vm.Paths, image string, netIndex int) (*timing.Stopwatch, error) {
 	img, err := vm.LookupImage(image)
 	if err != nil {
 		return nil, err
@@ -130,12 +141,19 @@ func boot(ctx context.Context, p vm.Paths, image string) (*timing.Stopwatch, err
 		return nil, err
 	}
 	sw.Lap("disk cloned")
+	spec := vm.Spec{VCPUs: img.VCPUs, MemMiB: img.MemMiB}
+	if netIndex > 0 {
+		if spec.Net, err = vm.AttachNet(p, netIndex); err != nil {
+			return nil, err
+		}
+		sw.Lap("tap ready")
+	}
 	c, err := vm.StartProcess(ctx, p)
 	if err != nil {
 		return nil, err
 	}
 	sw.Lap("firecracker API ready")
-	if err := vm.Configure(ctx, c, p, vm.Spec{VCPUs: img.VCPUs, MemMiB: img.MemMiB}); err != nil {
+	if err := vm.Configure(ctx, c, p, spec); err != nil {
 		return nil, err
 	}
 	sw.Lap("configured")
@@ -147,6 +165,13 @@ func boot(ctx context.Context, p vm.Paths, image string) (*timing.Stopwatch, err
 		return nil, err
 	}
 	sw.Lap("app ready")
+	if spec.Net != nil && img.CDPPort != 0 {
+		addr := fmt.Sprintf("%s:%d", spec.Net.GuestIP, img.CDPPort)
+		if err := vm.WaitTCP(ctx, addr, 10*time.Second); err != nil {
+			return nil, err
+		}
+		sw.Lap("CDP reachable from host")
+	}
 	return sw, sw.Save(p.Timings())
 }
 
@@ -161,19 +186,20 @@ func snapshot(ctx context.Context, p vm.Paths, sync bool) (*timing.Stopwatch, er
 // count printed after it: if the VM truly resumed, the second is just past the
 // first; a reboot would restart at 1.
 func restore(ctx context.Context, p vm.Paths) (sw *timing.Stopwatch, before, after int, err error) {
-	before, err = vm.LastCount(p)
-	if err != nil {
-		return nil, 0, 0, err
+	if _, img, ierr := vm.ImageOf(p); ierr == nil && img.Counter {
+		if before, err = vm.LastCount(p); err != nil {
+			return nil, 0, 0, err
+		}
 	}
 	from := vm.LogSize(p) // ignore every count line printed before this moment
 	sw = timing.Start()
 	if _, err = vm.Restore(ctx, p, sw); err != nil {
 		return nil, 0, 0, err
 	}
-	if after, err = vm.WaitForCount(ctx, p, from, 30*time.Second); err != nil {
+	if after, err = vm.WaitRestored(ctx, p, from, 30*time.Second); err != nil {
 		return nil, 0, 0, err
 	}
-	sw.Lap("first new count (ready)")
+	sw.Lap("running again")
 	return sw, before, after, nil
 }
 
@@ -183,7 +209,9 @@ func restoreCmd(ctx context.Context, p vm.Paths) error {
 		return err
 	}
 	sw.Print(os.Stdout)
-	fmt.Printf("\nlast count before: %d   first count after: %d\n", before, after)
+	if after > 0 { // only the counter guest has counts to compare
+		fmt.Printf("\nlast count before: %d   first count after: %d\n", before, after)
+	}
 	return nil
 }
 
@@ -196,11 +224,11 @@ func accept(ctx context.Context, p vm.Paths) error {
 	if _, err := vm.Restore(ctx, p, sw); err != nil {
 		return err
 	}
-	after, err := vm.WaitForCount(ctx, p, from, 30*time.Second)
+	after, err := vm.WaitRestored(ctx, p, from, 30*time.Second)
 	if err != nil {
 		return err
 	}
-	sw.Lap("first new count (ready)")
+	sw.Lap("running again")
 	return json.NewEncoder(os.Stdout).Encode(migrate.Report{After: after, Laps: sw.Record()})
 }
 
@@ -293,7 +321,7 @@ func benchBoot(ctx context.Context, n int, image string) error {
 	for i := 1; i <= n; i++ {
 		p := vm.PathsFor(fmt.Sprintf("bench-%d", i))
 		_ = os.RemoveAll(p.Dir)
-		sw, err := boot(ctx, p, image)
+		sw, err := boot(ctx, p, image, 0)
 		if err != nil {
 			return fmt.Errorf("run %d: %w", i, err)
 		}
@@ -312,7 +340,7 @@ func benchBoot(ctx context.Context, n int, image string) error {
 func benchSnapshot(ctx context.Context, n int) error {
 	p := vm.PathsFor("sbench")
 	_ = os.RemoveAll(p.Dir)
-	if _, err := boot(ctx, p, "counter"); err != nil {
+	if _, err := boot(ctx, p, "counter", 0); err != nil {
 		return err
 	}
 	defer vm.Kill(p)
@@ -343,7 +371,7 @@ func benchSnapshot(ctx context.Context, n int) error {
 func benchRestore(ctx context.Context, n int) error {
 	p := vm.PathsFor("rbench")
 	_ = os.RemoveAll(p.Dir)
-	if _, err := boot(ctx, p, "counter"); err != nil {
+	if _, err := boot(ctx, p, "counter", 0); err != nil {
 		return err
 	}
 	time.Sleep(time.Second)
@@ -386,7 +414,7 @@ func benchMigrate(ctx context.Context, n int, host string, gap time.Duration) er
 	for i := 1; i <= n; i++ {
 		p := vm.PathsFor(fmt.Sprintf("mig-%d", i))
 		_ = os.RemoveAll(p.Dir)
-		if _, err := boot(ctx, p, "counter"); err != nil {
+		if _, err := boot(ctx, p, "counter", 0); err != nil {
 			return fmt.Errorf("run %d: boot: %w", i, err)
 		}
 		time.Sleep(time.Second) // let the guest run and dirty some memory first

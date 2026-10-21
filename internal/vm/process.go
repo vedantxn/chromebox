@@ -69,9 +69,21 @@ func waitForSocket(ctx context.Context, path string, timeout time.Duration) erro
 	}
 }
 
-// Kill stops the VM's Firecracker process. That alone destroys the VM: when
-// the process exits, the kernel closes its KVM file descriptors.
+// Kill stops the VM's Firecracker process and removes its TAP device. Killing
+// the process alone destroys the VM: when it exits, the kernel closes its KVM
+// file descriptors. The TAP is removed even if no process is found, so that a
+// failed migration doesn't leave one behind on the target.
 func Kill(p Paths) error {
+	err := killProcess(p)
+	if nn, nerr := NetOf(p); nerr == nil && nn != nil {
+		if derr := nn.DeleteTap(); derr != nil && err == nil {
+			err = derr
+		}
+	}
+	return err
+}
+
+func killProcess(p Paths) error {
 	b, err := os.ReadFile(p.PIDFile())
 	if err != nil {
 		return fmt.Errorf("no running VM in %s: %w", p.Dir, err)

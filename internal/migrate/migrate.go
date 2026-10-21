@@ -83,9 +83,15 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 	if err := vm.Snapshot(ctx, c, p, vm.SnapshotOptions{Sync: false}, sw); err != nil {
 		return nil, err
 	}
-	before, err := vm.LastCount(p)
+	_, img, err := vm.ImageOf(p)
 	if err != nil {
 		return nil, err
+	}
+	before := 0
+	if img.Counter {
+		if before, err = vm.LastCount(p); err != nil {
+			return nil, err
+		}
 	}
 
 	// Memory and the disk delta are independent, so send them at the same time
@@ -110,7 +116,7 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 	// The VM resumed from the snapshot if its next count follows the last one
 	// printed here. A reboot would print 1; a stale or wrong snapshot would
 	// land somewhere else entirely.
-	if rep.After <= before || rep.After > before+5 {
+	if img.Counter && (rep.After <= before || rep.After > before+5) {
 		return nil, fmt.Errorf("target resumed at count %d, expected just after %d", rep.After, before)
 	}
 

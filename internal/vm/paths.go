@@ -31,10 +31,19 @@ func (p Paths) SerialLog() string { return filepath.Join(p.Dir, "serial.log") }
 func (p Paths) Rootfs() string    { return filepath.Join(p.Dir, "rootfs.ext4") }
 func (p Paths) Timings() string   { return filepath.Join(p.Dir, "timings.json") }
 
+// NetFile holds the VM's network index. A snapshot keeps a copy (SnapNet), so
+// the network identity travels with the snapshot to another node.
+func (p Paths) NetFile() string { return filepath.Join(p.Dir, "net") }
+
+// ImageFile holds the name of the golden image the VM was made from.
+func (p Paths) ImageFile() string { return filepath.Join(p.Dir, "image") }
+
 // A snapshot is three files kept together in snap/: the two Firecracker writes
 // (device state and guest RAM) plus a clone of the disk taken while paused.
 // Firecracker does not snapshot the disk, so we do.
 func (p Paths) SnapDir() string    { return filepath.Join(p.Dir, "snap") }
 func (p Paths) Vmstate() string    { return filepath.Join(p.SnapDir(), "vmstate") }
 func (p Paths) Mem() string        { return filepath.Join(p.SnapDir(), "mem") }
+func (p Paths) SnapNet() string    { return filepath.Join(p.SnapDir(), "net") }
+func (p Paths) SnapImage() string  { return filepath.Join(p.SnapDir(), "image") }
 func (p Paths) SnapRootfs() string { return filepath.Join(p.SnapDir(), "rootfs.ext4") }

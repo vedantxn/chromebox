@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 
 	"github.com/vedantxn/chromebox/internal/firecracker"
+	"github.com/vedantxn/chromebox/internal/netsetup"
 	"github.com/vedantxn/chromebox/internal/timing"
 )
 
@@ -14,6 +17,7 @@ import (
 type Spec struct {
 	VCPUs  int
 	MemMiB int
+	Net    *netsetup.Net // nil: the VM has no network
 }
 
 // bootArgs: console=ttyS0 sends kernel output to the serial port (Firecracker's
@@ -25,6 +29,9 @@ const bootArgs = "console=ttyS0 reboot=k panic=1"
 // the golden image. The clone is copy-on-write, so it is instant.
 func Create(p Paths, image string) error {
 	if err := os.MkdirAll(p.Dir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(p.ImageFile(), []byte(image+"\n"), 0o644); err != nil {
 		return err
 	}
 	return clone(ImagePath(image), p.Rootfs())
@@ -44,11 +51,24 @@ func clone(src, dst string) error {
 // Configure describes the machine to a fresh Firecracker process: kernel,
 // disk, CPU and memory. Nothing runs until the caller sends InstanceStart.
 func Configure(ctx context.Context, c *firecracker.Client, p Paths, s Spec) error {
+	args := bootArgs
+	if s.Net != nil {
+		args += " " + s.Net.BootArgs()
+	}
 	if err := c.PutBootSource(ctx, firecracker.BootSource{
 		KernelImagePath: KernelPath,
-		BootArgs:        bootArgs,
+		BootArgs:        args,
 	}); err != nil {
 		return err
+	}
+	if s.Net != nil {
+		if err := c.PutNetworkInterface(ctx, firecracker.NetworkInterface{
+			IfaceID:     "eth0",
+			GuestMAC:    s.Net.GuestMAC,
+			HostDevName: s.Net.TapName,
+		}); err != nil {
+			return err
+		}
 	}
 	if err := c.PutDrive(ctx, firecracker.Drive{
 		DriveID:      "rootfs",
@@ -101,6 +121,16 @@ func Snapshot(ctx context.Context, c *firecracker.Client, p Paths, o SnapshotOpt
 		return err
 	}
 	sw.Lap("disk cloned")
+	// The network identity and the image name are part of the snapshot:
+	// whoever restores it must recreate the same TAP and MACs, and must know
+	// how to tell that the guest is running again.
+	for _, f := range [][2]string{{p.NetFile(), p.SnapNet()}, {p.ImageFile(), p.SnapImage()}} {
+		if b, err := os.ReadFile(f[0]); err == nil {
+			if err := os.WriteFile(f[1], b, 0o644); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -118,6 +148,17 @@ func Restore(ctx context.Context, p Paths, sw *timing.Stopwatch) (*firecracker.C
 		return nil, err
 	}
 	sw.Lap("disk restored")
+	// The restored guest expects its TAP to exist, with the same name and MAC.
+	nn, err := NetOf(p)
+	if err != nil {
+		return nil, err
+	}
+	if nn != nil {
+		if err := nn.EnsureTap(os.Getuid(), os.Getgid()); err != nil {
+			return nil, err
+		}
+		sw.Lap("tap ready")
+	}
 	c, err := StartProcess(ctx, p)
 	if err != nil {
 		return nil, err
@@ -132,4 +173,42 @@ func Restore(ctx context.Context, p Paths, sw *timing.Stopwatch) (*firecracker.C
 	}
 	sw.Lap("snapshot loaded")
 	return c, nil
+}
+
+// AttachNet gives the VM network index n: it creates the TAP device and
+// records the index in the VM's directory. Call it before Configure.
+func AttachNet(p Paths, n int) (*netsetup.Net, error) {
+	nn, err := netsetup.ForIndex(n)
+	if err != nil {
+		return nil, err
+	}
+	if err := nn.EnsureTap(os.Getuid(), os.Getgid()); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(p.NetFile(), []byte(strconv.Itoa(n)+"\n"), 0o644); err != nil {
+		return nil, err
+	}
+	return &nn, nil
+}
+
+// NetOf returns the VM's network identity, read from its directory or, on a
+// node that only holds a received snapshot, from the snapshot. nil means the VM
+// has no network.
+func NetOf(p Paths) (*netsetup.Net, error) {
+	for _, f := range []string{p.NetFile(), p.SnapNet()} {
+		b, err := os.ReadFile(f)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		if err != nil {
+			return nil, fmt.Errorf("bad net file %s: %w", f, err)
+		}
+		nn, err := netsetup.ForIndex(n)
+		return &nn, err
+	}
+	return nil, nil
 }

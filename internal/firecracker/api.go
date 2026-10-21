@@ -25,6 +25,13 @@ type MachineConfig struct {
 	MemSizeMiB int `json:"mem_size_mib"`
 }
 
+// NetworkInterface attaches a host TAP device to the guest as eth0-style NIC.
+type NetworkInterface struct {
+	IfaceID     string `json:"iface_id"`
+	GuestMAC    string `json:"guest_mac"`
+	HostDevName string `json:"host_dev_name"`
+}
+
 // InstanceInfo is what GET / reports about the VM.
 type InstanceInfo struct {
 	ID         string `json:"id"`
@@ -73,6 +80,10 @@ func (c *Client) PutBootSource(ctx context.Context, b BootSource) error {
 
 func (c *Client) PutDrive(ctx context.Context, d Drive) error {
 	return c.do(ctx, http.MethodPut, "/drives/"+d.DriveID, d, nil)
+}
+
+func (c *Client) PutNetworkInterface(ctx context.Context, n NetworkInterface) error {
+	return c.do(ctx, http.MethodPut, "/network-interfaces/"+n.IfaceID, n, nil)
 }
 
 func (c *Client) PutMachineConfig(ctx context.Context, m MachineConfig) error {
