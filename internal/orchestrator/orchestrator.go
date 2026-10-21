@@ -54,6 +54,9 @@ type Orchestrator struct {
 	seen map[string]nodeState
 
 	pending map[string]int // memory held on a node for migrations in flight (guarded by place)
+
+	proxy   *gateway.Proxy
+	started time.Time
 }
 
 func New(cfg Config) (*Orchestrator, error) {
@@ -67,13 +70,16 @@ func New(cfg Config) (*Orchestrator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}}, nil
+	o := &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}, started: time.Now()}
+	o.proxy = gateway.NewProxy(o.allowed)
+	return o, nil
 }
 
 // Run serves the API and the CDP proxy until ctx ends.
 func (o *Orchestrator) Run(ctx context.Context) error {
 	api := &http.Server{Addr: o.cfg.APIListen, Handler: o.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	proxy := &http.Server{Addr: o.cfg.ProxyListen, Handler: gateway.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	proxy := &http.Server{Addr: o.cfg.ProxyListen, Handler: o.proxy, ReadHeaderTimeout: 10 * time.Second}
+	go o.reconcileLoop(ctx)
 	errc := make(chan error, 2)
 	go func() { errc <- api.ListenAndServe() }()
 	go func() { errc <- proxy.ListenAndServe() }()
@@ -129,6 +135,7 @@ func (o *Orchestrator) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if err := o.store.UpsertNode(st.Node, url); err != nil {
 		log.Printf("upsert node %s: %v", st.Node, err)
 	}
+	o.fence(st)
 	w.WriteHeader(http.StatusNoContent)
 }
 

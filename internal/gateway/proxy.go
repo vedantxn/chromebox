@@ -4,6 +4,7 @@
 package gateway
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/netsetup"
@@ -39,7 +41,114 @@ const (
 // VM: it dials the VM's IP and the network routes the packets. That is why a
 // migration is invisible to it, and why the agent's connection, which ends here,
 // never has to be reopened.
-func Handler() http.Handler {
+func Handler() http.Handler { return NewProxy(nil) }
+
+// Proxy is the CDP proxy plus a register of the WebSocket connections it holds
+// for each VM, so that the control plane can close them when a VM is lost.
+// Without that, an agent whose VM died waits on a connection that will never
+// answer (M2's break-it test: no error, no close, just silence).
+type Proxy struct {
+	rp      *httputil.ReverseProxy
+	allowed func(n int) bool // nil: every VM index is allowed
+
+	mu    sync.Mutex
+	conns map[int]map[*trackedConn]struct{}
+}
+
+// NewProxy returns a proxy. allowed, if set, refuses VMs the control plane does
+// not know as running, at once, instead of dialing an address nobody answers.
+func NewProxy(allowed func(n int) bool) *Proxy {
+	p := &Proxy{rp: newReverseProxy(), allowed: allowed, conns: map[int]map[*trackedConn]struct{}{}}
+	return p
+}
+
+// CloseVM closes every client connection to VM n and returns how many.
+func (p *Proxy) CloseVM(n int) int {
+	p.mu.Lock()
+	cs := p.conns[n]
+	delete(p.conns, n)
+	p.mu.Unlock()
+	for c := range cs {
+		_ = c.Conn.Close()
+	}
+	return len(cs)
+}
+
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	m := vmPath.FindStringSubmatch(r.URL.Path)
+	if m == nil {
+		http.Error(w, "use /v/<vm index>/...", http.StatusNotFound)
+		return
+	}
+	n, _ := strconv.Atoi(m[1])
+	if _, err := netsetup.ForIndex(n); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if p.allowed != nil && !p.allowed(n) {
+		http.Error(w, "no running VM with index "+m[1], http.StatusNotFound)
+		return
+	}
+	ctx := context.WithValue(r.Context(), keyVM, n)
+	ctx = context.WithValue(ctx, keyClientHost, r.Host)
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		log.Printf("vm %d: websocket open %s", n, r.URL.Path)
+		// The reverse proxy takes the client connection over (hijacks it) for
+		// a WebSocket; catch it there and register it under the VM.
+		w = &hijackTracker{ResponseWriter: w, track: func(c *trackedConn) { p.add(n, c) }}
+	}
+	p.rp.ServeHTTP(w, r.WithContext(ctx))
+}
+
+func (p *Proxy) add(n int, c *trackedConn) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.conns[n] == nil {
+		p.conns[n] = map[*trackedConn]struct{}{}
+	}
+	p.conns[n][c] = struct{}{}
+	c.onClose = func() {
+		p.mu.Lock()
+		delete(p.conns[n], c)
+		p.mu.Unlock()
+	}
+}
+
+type hijackTracker struct {
+	http.ResponseWriter
+	track func(*trackedConn)
+}
+
+func (h *hijackTracker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := h.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("connection cannot be hijacked")
+	}
+	c, rw, err := hj.Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	tc := &trackedConn{Conn: c}
+	h.track(tc)
+	return tc, rw, nil
+}
+
+type trackedConn struct {
+	net.Conn
+	once    sync.Once
+	onClose func()
+}
+
+func (c *trackedConn) Close() error {
+	c.once.Do(func() {
+		if c.onClose != nil {
+			c.onClose()
+		}
+	})
+	return c.Conn.Close()
+}
+
+func newReverseProxy() *httputil.ReverseProxy {
 	transport := &http.Transport{
 		// Short keepalive probes keep the long-lived upstream connection from
 		// being mistaken for dead, and detect it if it really is.
@@ -47,7 +156,7 @@ func Handler() http.Handler {
 		MaxIdleConnsPerHost: 4,
 		IdleConnTimeout:     30 * time.Second,
 	}
-	rp := &httputil.ReverseProxy{
+	return &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			n := pr.In.Context().Value(keyVM).(int)
@@ -72,25 +181,6 @@ func Handler() http.Handler {
 			http.Error(w, "bad gateway: "+err.Error(), http.StatusBadGateway)
 		},
 	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		m := vmPath.FindStringSubmatch(r.URL.Path)
-		if m == nil {
-			http.Error(w, "use /v/<vm index>/...", http.StatusNotFound)
-			return
-		}
-		n, _ := strconv.Atoi(m[1])
-		if _, err := netsetup.ForIndex(n); err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		ctx := context.WithValue(r.Context(), keyVM, n)
-		ctx = context.WithValue(ctx, keyClientHost, r.Host)
-		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-			log.Printf("vm %d: websocket open %s", n, r.URL.Path)
-		}
-		rp.ServeHTTP(w, r.WithContext(ctx))
-	})
 }
 
 // rewriteDiscovery fixes up Chrome's discovery documents (/json/version,
