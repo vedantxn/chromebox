@@ -27,8 +27,12 @@ func Start() *Stopwatch {
 	return &Stopwatch{start: time.Now()}
 }
 
-// Lap marks the end of a step.
+// Lap marks the end of a step. A nil Stopwatch ignores laps, so callers that
+// don't care about timing can pass nil.
 func (s *Stopwatch) Lap(name string) {
+	if s == nil {
+		return
+	}
 	s.laps = append(s.laps, lap{name: name, at: time.Since(s.start)})
 }
 

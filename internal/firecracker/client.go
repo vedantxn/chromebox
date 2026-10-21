@@ -20,6 +20,12 @@ type Client struct {
 // New returns a client for the Firecracker API socket at socketPath.
 func New(socketPath string) *Client {
 	transport := &http.Transport{
+		// Firecracker caps its open API connections (it answers 503 "Too many
+		// open connections" past the limit). One connection per request, closed
+		// when the request ends, means idle keep-alive connections can never
+		// pile up, however many clients we create. Connecting to a Unix socket
+		// costs microseconds, so nothing is lost.
+		DisableKeepAlives: true,
 		// Replacing the dialer swaps TCP for the Unix socket and leaves HTTP
 		// itself untouched. This is what `curl --unix-socket` does.
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -63,9 +69,13 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
 		var e apiError
-		_ = json.NewDecoder(resp.Body).Decode(&e)
-		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, e.FaultMessage)
+		msg := string(raw)
+		if json.Unmarshal(raw, &e) == nil && e.FaultMessage != "" {
+			msg = e.FaultMessage
+		}
+		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, msg)
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)

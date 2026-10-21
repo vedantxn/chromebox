@@ -32,6 +32,34 @@ type InstanceInfo struct {
 	VMMVersion string `json:"vmm_version"`
 }
 
+// SnapshotCreate says where to write a snapshot. The VM must be paused.
+type SnapshotCreate struct {
+	SnapshotPath string `json:"snapshot_path"` // device and vCPU state ("vmstate")
+	MemFilePath  string `json:"mem_file_path"` // guest RAM
+	SnapshotType string `json:"snapshot_type,omitempty"`
+	// SyncSnapshotFiles asks Firecracker to fsync both files before replying.
+	// Nil leaves Firecracker's default (true).
+	SyncSnapshotFiles *bool `json:"sync_snapshot_files,omitempty"`
+}
+
+// MemBackend says where guest RAM is loaded from on restore. "File" maps a
+// memory file; "Uffd" hands page faults to another process (M5).
+type MemBackend struct {
+	BackendType string `json:"backend_type"`
+	BackendPath string `json:"backend_path"`
+}
+
+// SnapshotLoad restores a VM into a fresh, unconfigured Firecracker process.
+type SnapshotLoad struct {
+	SnapshotPath string     `json:"snapshot_path"`
+	MemBackend   MemBackend `json:"mem_backend"`
+	ResumeVM     bool       `json:"resume_vm"`
+}
+
+type vmState struct {
+	State string `json:"state"`
+}
+
 type action struct {
 	ActionType string `json:"action_type"`
 }
@@ -60,4 +88,22 @@ func (c *Client) DescribeInstance(ctx context.Context) (InstanceInfo, error) {
 	var info InstanceInfo
 	err := c.do(ctx, http.MethodGet, "/", nil, &info)
 	return info, err
+}
+
+// PauseVM stops the vCPUs. The guest sees no time pass and nothing is lost:
+// registers and memory stay exactly as they were.
+func (c *Client) PauseVM(ctx context.Context) error {
+	return c.do(ctx, http.MethodPatch, "/vm", vmState{State: "Paused"}, nil)
+}
+
+func (c *Client) ResumeVM(ctx context.Context) error {
+	return c.do(ctx, http.MethodPatch, "/vm", vmState{State: "Resumed"}, nil)
+}
+
+func (c *Client) CreateSnapshot(ctx context.Context, s SnapshotCreate) error {
+	return c.do(ctx, http.MethodPut, "/snapshot/create", s, nil)
+}
+
+func (c *Client) LoadSnapshot(ctx context.Context, s SnapshotLoad) error {
+	return c.do(ctx, http.MethodPut, "/snapshot/load", s, nil)
 }

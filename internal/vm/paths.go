@@ -30,3 +30,11 @@ func (p Paths) PIDFile() string   { return filepath.Join(p.Dir, "fc.pid") }
 func (p Paths) SerialLog() string { return filepath.Join(p.Dir, "serial.log") }
 func (p Paths) Rootfs() string    { return filepath.Join(p.Dir, "rootfs.ext4") }
 func (p Paths) Timings() string   { return filepath.Join(p.Dir, "timings.json") }
+
+// A snapshot is three files kept together in snap/: the two Firecracker writes
+// (device state and guest RAM) plus a clone of the disk taken while paused.
+// Firecracker does not snapshot the disk, so we do.
+func (p Paths) SnapDir() string    { return filepath.Join(p.Dir, "snap") }
+func (p Paths) Vmstate() string    { return filepath.Join(p.SnapDir(), "vmstate") }
+func (p Paths) Mem() string        { return filepath.Join(p.SnapDir(), "mem") }
+func (p Paths) SnapRootfs() string { return filepath.Join(p.SnapDir(), "rootfs.ext4") }
