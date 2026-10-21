@@ -67,6 +67,9 @@ for n in $nodes; do
   scripts/aws/nodes.sh ssh "$n" "NAME=$n NODE_IP=$n_ip GW_IP=$gw_ip bash -s" <<'EOS'
 set -euo pipefail
 sudo modprobe ip_gre
+# Forward between the tunnel and the VMs' TAPs; no strict reverse-path filtering.
+printf 'net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.rp_filter = 0\nnet.ipv4.conf.default.rp_filter = 0\n' | sudo tee /etc/sysctl.d/90-chromebox.conf >/dev/null
+sudo sysctl -q -p /etc/sysctl.d/90-chromebox.conf 2>/dev/null || true
 ip link show gre-gw >/dev/null 2>&1 || sudo ip tunnel add gre-gw mode gre local "$NODE_IP" remote "$GW_IP" ttl 255
 sudo ip link set gre-gw up
 # Packets for a VM are routed normally (pref 90); everything else a VM sends

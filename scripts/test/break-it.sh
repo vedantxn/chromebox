@@ -4,10 +4,11 @@
 # Usage: break-it.sh ec2-user@172.31.2.181 [t1 t2c t2 t3 t4 t5 t6]   (default: all)
 B=${1:?usage: break-it.sh <ssh target of node B>}
 V=/var/lib/chromebox/vms
+M=/dev/shm/chromebox   # snapshot memory and device state live in tmpfs
 K="-i $HOME/.ssh/chromebox_node -o IdentitiesOnly=yes"
 onb() { ssh $K "$B" "$@"; }
 section() { printf '\n=== %s\n' "$*"; }
-cleanup() { for i in "$@"; do chromebox kill "$i" 2>/dev/null; rm -rf "$V/$i"; onb "chromebox kill $i 2>/dev/null; rm -rf $V/$i" 2>/dev/null; done; }
+cleanup() { for i in "$@"; do chromebox kill "$i" 2>/dev/null; rm -rf "$V/$i" "$M/$i"; onb "chromebox kill $i 2>/dev/null; rm -rf $V/$i $M/$i" 2>/dev/null; done; }
 last_count() { grep -a '^count' "$V/$1/serial.log" | tail -1 | tr -d '\r'; }
 
 TESTS=("${@:2}")
@@ -46,7 +47,7 @@ fi
 if [ ${#TESTS[@]} -eq 0 ] || [[ " ${TESTS[*]} " == *" t3 "* ]]; then
 section "T3 truncated memory file"
 cleanup t3; chromebox boot t3 >/dev/null; sleep 1; chromebox snapshot t3 nosync >/dev/null; chromebox kill t3
-truncate -s 100M $V/t3/snap/mem
+truncate -s 100M $M/t3/mem
 chromebox restore t3 2>&1 | head -3; echo "(exit code ${PIPESTATUS[0]})"
 cleanup t3
 fi
@@ -54,7 +55,7 @@ fi
 if [ ${#TESTS[@]} -eq 0 ] || [[ " ${TESTS[*]} " == *" t4 "* ]]; then
 section "T4 snapshot restored under a different VM id (drive path differs from the one saved in vmstate)"
 cleanup t4 t4b; chromebox boot t4 >/dev/null; sleep 1; chromebox snapshot t4 nosync >/dev/null; chromebox kill t4
-mkdir -p $V/t4b; cp -r $V/t4/snap $V/t4b/snap
+mkdir -p $V/t4b $M/t4b; cp -r $V/t4/snap $V/t4b/snap; cp -r $M/t4/. $M/t4b/
 chromebox accept t4b 2>&1 | head -3
 cleanup t4 t4b
 fi
@@ -66,7 +67,7 @@ rm -f /tmp/t5.sock; firecracker --api-sock /tmp/t5.sock >/dev/null 2>&1 & fc=$!
 sleep 0.3
 curl -s -X PUT --unix-socket /tmp/t5.sock http://localhost/machine-config -d '{"vcpu_count":1,"mem_size_mib":256}'
 curl -s -w ' [HTTP %{http_code}]\n' -X PUT --unix-socket /tmp/t5.sock http://localhost/snapshot/load \
-  -d "{\"snapshot_path\":\"$V/t5/snap/vmstate\",\"mem_backend\":{\"backend_type\":\"File\",\"backend_path\":\"$V/t5/snap/mem\"},\"resume_vm\":true}"
+  -d "{\"snapshot_path\":\"$M/t5/vmstate\",\"mem_backend\":{\"backend_type\":\"File\",\"backend_path\":\"$M/t5/mem\"},\"resume_vm\":true}"
 kill $fc; cleanup t5
 fi
 

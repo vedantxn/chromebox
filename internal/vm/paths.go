@@ -38,12 +38,23 @@ func (p Paths) NetFile() string { return filepath.Join(p.Dir, "net") }
 // ImageFile holds the name of the golden image the VM was made from.
 func (p Paths) ImageFile() string { return filepath.Join(p.Dir, "image") }
 
-// A snapshot is three files kept together in snap/: the two Firecracker writes
-// (device state and guest RAM) plus a clone of the disk taken while paused.
-// Firecracker does not snapshot the disk, so we do.
+// ShmDir is where snapshot memory lives: tmpfs, i.e. RAM. A migration's memory
+// file exists only for the length of the move; writing it to disk would make
+// the pause wait for the disk (an EBS volume sustains about 125 MB/s, so 1 GiB
+// takes 8 s once the kernel starts throttling writers), while RAM takes
+// well under a second. Firecracker maps the file instead of reading it, so a
+// restored VM runs directly on those pages.
+const ShmDir = "/dev/shm/chromebox"
+
+// MemDir holds the memory file and device state of the VM's snapshot.
+func (p Paths) MemDir() string { return filepath.Join(ShmDir, filepath.Base(p.Dir)) }
+
+// A snapshot is three files: the two Firecracker writes (device state and
+// guest RAM, in MemDir) plus a clone of the disk taken while paused (in
+// SnapDir). Firecracker does not snapshot the disk, so we do.
 func (p Paths) SnapDir() string    { return filepath.Join(p.Dir, "snap") }
-func (p Paths) Vmstate() string    { return filepath.Join(p.SnapDir(), "vmstate") }
-func (p Paths) Mem() string        { return filepath.Join(p.SnapDir(), "mem") }
+func (p Paths) Vmstate() string    { return filepath.Join(p.MemDir(), "vmstate") }
+func (p Paths) Mem() string        { return filepath.Join(p.MemDir(), "mem") }
 func (p Paths) SnapNet() string    { return filepath.Join(p.SnapDir(), "net") }
 func (p Paths) SnapImage() string  { return filepath.Join(p.SnapDir(), "image") }
 func (p Paths) SnapRootfs() string { return filepath.Join(p.SnapDir(), "rootfs.ext4") }

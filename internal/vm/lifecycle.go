@@ -37,9 +37,11 @@ func Create(p Paths, image string) error {
 	return clone(ImagePath(image), p.Rootfs())
 }
 
-// clone copies a file using the filesystem's copy-on-write clone (reflink):
+// CloneFile copies a file using the filesystem's copy-on-write clone (reflink):
 // the new file shares blocks with the old one until either is written, so a
 // 1 GiB disk clones in about a millisecond. dst is overwritten if it exists.
+func CloneFile(src, dst string) error { return clone(src, dst) }
+
 func clone(src, dst string) error {
 	out, err := exec.Command("cp", "--sparse=always", "--reflink=auto", src, dst).CombinedOutput()
 	if err != nil {
@@ -101,8 +103,10 @@ type SnapshotOptions struct {
 // (it flushes the disk then) and while the guest is paused, so no write can
 // land between the memory image and the disk image.
 func Snapshot(ctx context.Context, c *firecracker.Client, p Paths, o SnapshotOptions, sw *timing.Stopwatch) error {
-	if err := os.MkdirAll(p.SnapDir(), 0o755); err != nil {
-		return err
+	for _, d := range []string{p.SnapDir(), p.MemDir()} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return err
+		}
 	}
 	if err := c.PauseVM(ctx); err != nil {
 		return err

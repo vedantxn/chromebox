@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/vedantxn/chromebox/internal/blockdiff"
 	"github.com/vedantxn/chromebox/internal/firecracker"
 	"github.com/vedantxn/chromebox/internal/gateway"
 	"github.com/vedantxn/chromebox/internal/node"
@@ -31,6 +33,9 @@ type Result struct {
 	Before    int           // last count printed here before the pause
 	After     int           // first count printed on the target after the restore
 	Remote    timing.Record // the target's own breakdown of its restore
+	// DeltaBytes is how much of the disk had changed since the reference clone
+	// and was sent while the VM was paused.
+	DeltaBytes int64
 }
 
 // Report is what `chromebox accept` prints on the target for the source to read.
@@ -42,12 +47,13 @@ type Report struct {
 
 // Run migrates VM p to host (an ssh target such as ec2-user@172.31.2.181).
 //
-// The disk is copied twice. The first pass runs while the VM is still running
-// and costs no downtime; it moves the bulk (reading a cold 400 MB disk image
-// from EBS is the slowest thing in the whole migration). The second pass runs
-// after the pause and sends only the blocks that changed in between. The same
-// idea, "copy while it runs, then send what changed", is how live migration
-// moves memory.
+// The disk travels in two parts. Before the pause, a reflink clone of it (the
+// reference, which cannot change) is copied to the target while the VM keeps
+// running: that moves the bulk at no cost in downtime. After the pause, only
+// the parts of the disk that differ from the reference are sent, found by
+// comparing where the two files' blocks live on the device (package
+// blockdiff), not by reading them. The same idea, "copy while it runs, then
+// send what changed", is how live migration moves memory.
 //
 // The order is what makes it safe. The source VM is only destroyed after the
 // target has proven, by printing a new count, that it is running. Until that
@@ -84,7 +90,8 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 		if targetStarted {
 			_, _ = r.Run(context.Background(), "chromebox", "kill", filepath.Base(p.Dir))
 		}
-		_, _ = r.Run(context.Background(), "rm", "-rf", p.Dir)
+		_, _ = r.Run(context.Background(), "rm", "-rf", p.Dir, p.MemDir())
+		_ = os.RemoveAll(p.MemDir())
 		_ = c.ResumeVM(context.Background()) // errors if it was never paused; fine
 		err = fmt.Errorf("migration rolled back, source resumed: %w", err)
 	}()
@@ -100,11 +107,18 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 		}
 		sw.Lap("gateway connected")
 	}
-	if _, err := r.Run(ctx, "mkdir", "-p", p.SnapDir()); err != nil {
+	if _, err := r.Run(ctx, "mkdir", "-p", p.SnapDir(), p.MemDir()); err != nil {
 		return nil, err
 	}
 	sw.Lap("target prepared")
-	if err := copyDisk(ctx, r, p, "-aS"); err != nil {
+	// The reference must not change while it is copied, so clone it first and
+	// copy the clone; the VM goes on writing to its own file.
+	ref := filepath.Join(p.Dir, "rootfs.ref")
+	defer os.Remove(ref)
+	if err := vm.CloneFile(p.Rootfs(), ref); err != nil {
+		return nil, err
+	}
+	if err := copyDisk(ctx, r, ref, p.SnapRootfs()); err != nil {
 		return nil, err
 	}
 	sw.Lap("disk pre-copied")
@@ -126,10 +140,17 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 
 	// Memory and the disk delta are independent, so send them at the same time
 	// over the shared connection; the slower one sets the pace.
-	if err := copyState(ctx, r, p); err != nil {
+	deltaBytes, err := copyState(ctx, r, p, ref)
+	if err != nil {
 		return nil, err
 	}
 	sw.Lap("memory + disk delta copied")
+	if os.Getenv("CHROMEBOX_VERIFY_DISK") != "" { // slow: tests only
+		if err := verifyDisk(ctx, r, p); err != nil {
+			return nil, err
+		}
+		sw.Lap("disk verified (test only)")
+	}
 
 	targetStarted = true
 	out, err := r.Run(ctx, "chromebox", "accept", filepath.Base(p.Dir))
@@ -173,21 +194,26 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 	if err := os.RemoveAll(p.Dir); err != nil {
 		return nil, err
 	}
+	_ = os.RemoveAll(p.MemDir()) // frees the snapshot's RAM
 	sw.Lap("source destroyed")
 
-	return &Result{Laps: sw, Downtime: down, Reachable: reachable, Before: before, After: rep.After, Remote: rep.Laps}, nil
+	return &Result{Laps: sw, Downtime: down, Reachable: reachable, Before: before, After: rep.After, Remote: rep.Laps, DeltaBytes: deltaBytes}, nil
 }
 
-// copyMemory streams the memory and device-state files of the snapshot to the
-// same path on the target: tar here, through the shared ssh connection, into
-// tar there. The disk image is excluded; copyDisk handles it.
+// copyMemory streams the snapshot's memory and device state (in tmpfs) plus the
+// small files in the snapshot directory (the network identity and image name)
+// to the same paths on the target: tar here, through the shared ssh connection,
+// into tar there. The disk image is excluded; it travels separately.
 //
 // --sparse writes the runs of zeros as holes, so they cost nothing to send or
-// store (about 60% of a fresh guest's memory pages are all zeros). No
+// store (a fresh Chrome guest's memory is about 40% all-zero pages). No
 // compression: it costs more CPU time than the network takes to move bytes.
 func copyMemory(ctx context.Context, r *remote.Remote, p vm.Paths) error {
-	send := exec.CommandContext(ctx, "tar", "-C", p.SnapDir(), "--sparse", "--exclude=rootfs.ext4", "-cf", "-", ".")
-	recv := r.Command(ctx, "tar", "-C", p.SnapDir(), "-xf", "-")
+	// Relative to /, so both directories fit in one stream and land at the
+	// same absolute paths on the target.
+	send := exec.CommandContext(ctx, "tar", "-C", "/", "--sparse", "--exclude=rootfs.ext4", "-cf", "-",
+		strings.TrimPrefix(p.SnapDir(), "/"), strings.TrimPrefix(p.MemDir(), "/"))
+	recv := r.Command(ctx, "tar", "-C", "/", "-xf", "-")
 
 	pipe, err := send.StdoutPipe()
 	if err != nil {
@@ -215,17 +241,18 @@ func copyMemory(ctx context.Context, r *remote.Remote, p vm.Paths) error {
 }
 
 // copyState sends the memory files and the disk delta concurrently and returns
-// the first error, if any. The disk has been paused since the snapshot started,
-// so p.Rootfs() is exactly what the target must end up with. rsync's -I forces
-// a block-level comparison even when size and time look unchanged, and
-// --inplace rewrites only the blocks that differ in the file the first pass
-// already put there.
-func copyState(ctx context.Context, r *remote.Remote, p vm.Paths) error {
+// the size of the delta and the first error, if any.
+func copyState(ctx context.Context, r *remote.Remote, p vm.Paths, ref string) (int64, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 2)
+	var delta int64
 	go func() { errc <- copyMemory(ctx, r, p) }()
-	go func() { errc <- copyDisk(ctx, r, p, "-aI", "--inplace") }()
+	go func() {
+		var err error
+		delta, err = sendDelta(ctx, r, p, ref)
+		errc <- err
+	}()
 	var first error
 	for i := 0; i < 2; i++ {
 		if err := <-errc; err != nil && first == nil {
@@ -233,16 +260,76 @@ func copyState(ctx context.Context, r *remote.Remote, p vm.Paths) error {
 			cancel() // stop the other transfer; its error is not interesting
 		}
 	}
-	return first
+	return delta, first
 }
 
-// copyDisk brings the target's snapshot disk image up to date with this VM's
-// disk, using rsync, which sends only the blocks that differ from what the
-// target already has. flags are rsync options.
-func copyDisk(ctx context.Context, r *remote.Remote, p vm.Paths, flags ...string) error {
-	args := append(flags, "-e", r.SSHCmd(), p.Rootfs(), r.Host+":"+p.SnapRootfs())
+// copyDisk copies a whole file with rsync (-S writes runs of zeros as holes).
+func copyDisk(ctx context.Context, r *remote.Remote, src, dst string) error {
+	args := []string{"-aS", "-e", r.SSHCmd(), src, r.Host + ":" + dst}
 	if out, err := exec.CommandContext(ctx, "rsync", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("rsync disk: %w: %s", err, bytes.TrimSpace(out))
+	}
+	return nil
+}
+
+// sendDelta makes the target's copy of the disk match this VM's paused disk.
+// The target already holds the reference; send only the byte ranges where the
+// VM's disk differs from it.
+func sendDelta(ctx context.Context, r *remote.Remote, p vm.Paths, ref string) (int64, error) {
+	live, err := blockdiff.Extents(p.Rootfs())
+	if err != nil {
+		return 0, err
+	}
+	old, err := blockdiff.Extents(ref)
+	if err != nil {
+		return 0, err
+	}
+	st, err := os.Stat(p.Rootfs())
+	if err != nil {
+		return 0, err
+	}
+	ranges := blockdiff.Diff(live, old, uint64(st.Size()))
+
+	f, err := os.Open(p.Rootfs())
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	cmd := r.Command(ctx, "chromebox", "apply-delta", p.SnapRootfs())
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return 0, err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	sendErr := blockdiff.Send(stdin, f, ranges)
+	stdin.Close()
+	if err := cmd.Wait(); err != nil {
+		return 0, fmt.Errorf("apply-delta on target: %w: %s", err, bytes.TrimSpace(stderr.Bytes()))
+	}
+	if sendErr != nil {
+		return 0, sendErr
+	}
+	return int64(blockdiff.Total(ranges)), nil
+}
+
+// verifyDisk compares a checksum of the paused disk here with the target's
+// copy. It reads both files completely, so it is for tests only.
+func verifyDisk(ctx context.Context, r *remote.Remote, p vm.Paths) error {
+	local, err := exec.CommandContext(ctx, "sha256sum", p.Rootfs()).Output()
+	if err != nil {
+		return err
+	}
+	far, err := r.Run(ctx, "sha256sum", p.SnapRootfs())
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(bytes.Fields(local)[0], bytes.Fields(far)[0]) {
+		return fmt.Errorf("disk on target differs from the source's")
 	}
 	return nil
 }

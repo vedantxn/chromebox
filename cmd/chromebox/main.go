@@ -9,6 +9,7 @@
 //	chromebox restore <id>            bring the VM back from its snapshot, running
 //	chromebox kill <id>               stop the VM's Firecracker process
 //	chromebox gateway [listen]        run the CDP proxy (on the gateway host; default :9222)
+//	chromebox apply-delta <file>      target side of migrate: write byte ranges from stdin into a file
 //	chromebox migrate <id> <host>     move a running VM to another node (host: ssh target)
 //	chromebox accept <id>             target side of migrate: restore a received snapshot, print a JSON report
 //	chromebox bench-boot <n> [image]  boot n VMs and summarize the timings
@@ -29,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vedantxn/chromebox/internal/blockdiff"
 	"github.com/vedantxn/chromebox/internal/firecracker"
 	"github.com/vedantxn/chromebox/internal/gateway"
 	"github.com/vedantxn/chromebox/internal/migrate"
@@ -87,6 +89,10 @@ func main() {
 		err = killCmd(ctx, p)
 	case "gateway":
 		err = runGateway(arg)
+	case "apply-delta":
+		var n int64
+		n, err = blockdiff.Apply(os.Stdin, arg)
+		fmt.Fprintf(os.Stderr, "applied %d bytes\n", n)
 	case "accept":
 		err = accept(ctx, p)
 	case "migrate":
@@ -225,6 +231,15 @@ func restoreCmd(ctx context.Context, p vm.Paths) error {
 	if err != nil {
 		return err
 	}
+	// `kill` removed the gateway route; the VM is back, so put it back.
+	if nn, _ := vm.NetOf(p); nn != nil {
+		if cfg, _ := node.Load(); cfg != nil && cfg.Gateway != "" {
+			if err := gateway.SetRoute(ctx, remote.New(cfg.Gateway), nn.Block(), cfg.Tunnel()); err != nil {
+				return fmt.Errorf("gateway route: %w", err)
+			}
+			sw.Lap("gateway route set")
+		}
+	}
 	sw.Print(os.Stdout)
 	if after > 0 { // only the counter guest has counts to compare
 		fmt.Printf("\nlast count before: %d   first count after: %d\n", before, after)
@@ -246,6 +261,9 @@ func accept(ctx context.Context, p vm.Paths) error {
 		return err
 	}
 	sw.Lap("running again")
+	// The restored VM has the memory file mapped. Unlinking it now keeps the
+	// pages alive for as long as the VM runs and frees them when it exits.
+	_ = os.RemoveAll(p.MemDir())
 	rep := migrate.Report{After: after, Laps: sw.Record()}
 	if cfg, err := node.Load(); err == nil && cfg != nil {
 		rep.Node = cfg.Name
@@ -264,7 +282,10 @@ func migrateCmd(ctx context.Context, p vm.Paths, host string) error {
 	for _, l := range res.Remote.Laps {
 		fmt.Printf("%-26s %10.1f\n", l.Name, l.StepMs)
 	}
-	fmt.Printf("\nlast count on source: %d   first count on target: %d\n", res.Before, res.After)
+	if res.After > 0 {
+		fmt.Printf("\nlast count on source: %d   first count on target: %d\n", res.Before, res.After)
+	}
+	fmt.Printf("disk changed since the reference clone: %.1f MiB\n", float64(res.DeltaBytes)/(1<<20))
 	fmt.Printf("DOWNTIME (paused -> running on target): %.1f ms\n", ms(res.Downtime))
 	if res.Reachable > 0 {
 		fmt.Printf("UNREACHABLE (paused -> gateway route flipped): %.1f ms\n", ms(res.Reachable))
@@ -388,6 +409,7 @@ func benchSnapshot(ctx context.Context, n int) error {
 	if _, err := boot(ctx, p, "counter", 0); err != nil {
 		return err
 	}
+	defer os.RemoveAll(p.MemDir())
 	defer vm.Kill(p)
 	time.Sleep(time.Second) // let the guest run a little before the first snapshot
 
