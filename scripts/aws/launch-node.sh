@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Launch one chromebox node: m8i.large with nested virtualization enabled.
+# Launch one chromebox instance. Nodes (VM hosts) are m8i.large with nested
+# virtualization enabled; the gateway needs no virtualization and is a small
+# t3 instance.
 # Usage: scripts/aws/launch-node.sh node-a
+#        scripts/aws/launch-node.sh gateway t3.small
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
-name=${1:?usage: launch-node.sh <name>}
+name=${1:?usage: launch-node.sh <name> [instance-type]}
+type=${2:-$CB_INSTANCE_TYPE}
+cpu_options=()
+[[ $type == *8i.* ]] && cpu_options=(--cpu-options NestedVirtualization=enabled)
 
 # Resolve the AMI once and pin it. Every node must boot the same image, because
 # a snapshot taken under one host kernel is not guaranteed to load under another.
@@ -20,8 +26,8 @@ sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values="$CB_SG_N
 
 id=$(aws ec2 run-instances \
   --image-id "$ami" \
-  --instance-type "$CB_INSTANCE_TYPE" \
-  --cpu-options NestedVirtualization=enabled \
+  --instance-type "$type" \
+  "${cpu_options[@]}" \
   --key-name "$CB_KEY_NAME" \
   --subnet-id "$subnet" \
   --security-group-ids "$sg" \

@@ -1,0 +1,9 @@
+{
+  "name": "chromebox-demo",
+  "private": true,
+  "type": "module",
+  "description": "An agent that drives Chrome in a chromebox VM through the gateway",
+  "dependencies": {
+    "playwright-core": "1.57.0"
+  }
+}

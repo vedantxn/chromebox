@@ -30,3 +30,8 @@ myip=$(curl -s https://checkip.amazonaws.com)
 aws ec2 authorize-security-group-ingress --group-id "$sg" \
   --protocol tcp --port 22 --cidr "$myip/32" >/dev/null 2>&1 \
   && echo "allowed ssh from $myip" || echo "ssh from $myip already allowed"
+
+# The gateway's CDP proxy (agents connect here), also only from this machine.
+aws ec2 authorize-security-group-ingress --group-id "$sg" \
+  --protocol tcp --port 9222 --cidr "$myip/32" >/dev/null 2>&1 \
+  && echo "allowed cdp (9222) from $myip" || echo "cdp from $myip already allowed"

@@ -8,6 +8,7 @@
 //	chromebox snapshot <id> [nosync]  pause the VM and save vmstate, memory and disk; leaves it paused
 //	chromebox restore <id>            bring the VM back from its snapshot, running
 //	chromebox kill <id>               stop the VM's Firecracker process
+//	chromebox gateway [listen]        run the CDP proxy (on the gateway host; default :9222)
 //	chromebox migrate <id> <host>     move a running VM to another node (host: ssh target)
 //	chromebox accept <id>             target side of migrate: restore a received snapshot, print a JSON report
 //	chromebox bench-boot <n> [image]  boot n VMs and summarize the timings
@@ -20,6 +21,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -27,7 +30,10 @@ import (
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/firecracker"
+	"github.com/vedantxn/chromebox/internal/gateway"
 	"github.com/vedantxn/chromebox/internal/migrate"
+	"github.com/vedantxn/chromebox/internal/node"
+	"github.com/vedantxn/chromebox/internal/remote"
 	"github.com/vedantxn/chromebox/internal/timing"
 	"github.com/vedantxn/chromebox/internal/vm"
 )
@@ -78,7 +84,9 @@ func main() {
 	case "restore":
 		err = restoreCmd(ctx, p)
 	case "kill":
-		err = vm.Kill(p)
+		err = killCmd(ctx, p)
+	case "gateway":
+		err = runGateway(arg)
 	case "accept":
 		err = accept(ctx, p)
 	case "migrate":
@@ -172,6 +180,15 @@ func boot(ctx context.Context, p vm.Paths, image string, netIndex int) (*timing.
 		}
 		sw.Lap("CDP reachable from host")
 	}
+	// Tell the gateway where this VM lives, so agents can reach it.
+	if cfg, err := node.Load(); err != nil {
+		return nil, err
+	} else if cfg != nil && cfg.Gateway != "" && spec.Net != nil {
+		if err := gateway.SetRoute(ctx, remote.New(cfg.Gateway), spec.Net.Block(), cfg.Tunnel()); err != nil {
+			return nil, fmt.Errorf("gateway route: %w", err)
+		}
+		sw.Lap("gateway route set")
+	}
 	return sw, sw.Save(p.Timings())
 }
 
@@ -229,7 +246,11 @@ func accept(ctx context.Context, p vm.Paths) error {
 		return err
 	}
 	sw.Lap("running again")
-	return json.NewEncoder(os.Stdout).Encode(migrate.Report{After: after, Laps: sw.Record()})
+	rep := migrate.Report{After: after, Laps: sw.Record()}
+	if cfg, err := node.Load(); err == nil && cfg != nil {
+		rep.Node = cfg.Name
+	}
+	return json.NewEncoder(os.Stdout).Encode(rep)
 }
 
 func migrateCmd(ctx context.Context, p vm.Paths, host string) error {
@@ -244,8 +265,32 @@ func migrateCmd(ctx context.Context, p vm.Paths, host string) error {
 		fmt.Printf("%-26s %10.1f\n", l.Name, l.StepMs)
 	}
 	fmt.Printf("\nlast count on source: %d   first count on target: %d\n", res.Before, res.After)
-	fmt.Printf("DOWNTIME (paused -> counting on target): %.1f ms\n", ms(res.Downtime))
+	fmt.Printf("DOWNTIME (paused -> running on target): %.1f ms\n", ms(res.Downtime))
+	if res.Reachable > 0 {
+		fmt.Printf("UNREACHABLE (paused -> gateway route flipped): %.1f ms\n", ms(res.Reachable))
+	}
 	return nil
+}
+
+// killCmd stops a VM for good. When the node has a gateway it also removes the
+// VM's route there. (vm.Kill alone does not: migration kills the source copy
+// after the route has already moved to the target, and must leave it alone.)
+func killCmd(ctx context.Context, p vm.Paths) error {
+	nn, _ := vm.NetOf(p)
+	err := vm.Kill(p)
+	if cfg, _ := node.Load(); cfg != nil && cfg.Gateway != "" && nn != nil {
+		_ = gateway.DelRoute(ctx, remote.New(cfg.Gateway), nn.Block())
+	}
+	return err
+}
+
+func runGateway(listen string) error {
+	if !strings.Contains(listen, ":") {
+		listen = ":9222"
+	}
+	srv := &http.Server{Addr: listen, Handler: gateway.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	log.Printf("CDP proxy listening on %s", listen)
+	return srv.ListenAndServe()
 }
 
 func status(ctx context.Context, p vm.Paths) error {

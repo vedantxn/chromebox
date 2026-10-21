@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/firecracker"
+	"github.com/vedantxn/chromebox/internal/gateway"
+	"github.com/vedantxn/chromebox/internal/node"
+	"github.com/vedantxn/chromebox/internal/remote"
 	"github.com/vedantxn/chromebox/internal/timing"
 	"github.com/vedantxn/chromebox/internal/vm"
 )
@@ -22,15 +24,19 @@ import (
 // Result describes one finished migration.
 type Result struct {
 	Laps     *timing.Stopwatch // steps on this node, from the start of migrate
-	Downtime time.Duration     // VM paused here -> first new count on the target
-	Before   int               // last count printed here before the pause
-	After    int               // first count printed on the target after the restore
-	Remote   timing.Record     // the target's own breakdown of its restore
+	Downtime time.Duration     // VM paused here -> running again on the target
+	// Reachable is how long the VM was unreachable from the network: paused here
+	// -> the gateway's route points at the target. Zero without a gateway.
+	Reachable time.Duration
+	Before    int           // last count printed here before the pause
+	After     int           // first count printed on the target after the restore
+	Remote    timing.Record // the target's own breakdown of its restore
 }
 
 // Report is what `chromebox accept` prints on the target for the source to read.
 type Report struct {
 	After int           `json:"after"`
+	Node  string        `json:"node"` // the target's name, which names its tunnel on the gateway
 	Laps  timing.Record `json:"laps"`
 }
 
@@ -49,32 +55,56 @@ type Report struct {
 // resuming it.
 func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) {
 	sw := timing.Start()
-	r := newRemote(host)
+	r := remote.New(host)
 	c := firecracker.New(p.Socket())
-	targetStarted := false
+	targetStarted, flipped := false, false
+
+	// A VM with a network identity is reached through the gateway, whose
+	// route to the VM we must move along with it.
+	cfg, err := node.Load()
+	if err != nil {
+		return nil, err
+	}
+	nn, err := vm.NetOf(p)
+	if err != nil {
+		return nil, err
+	}
+	var gw *remote.Remote
+	if cfg != nil && cfg.Gateway != "" && nn != nil {
+		gw = remote.New(cfg.Gateway)
+	}
 
 	defer func() {
 		if err == nil {
 			return
 		}
-		if targetStarted {
-			_, _ = r.run(context.Background(), "chromebox", "kill", filepath.Base(p.Dir))
+		if flipped { // put the route back before resuming the source
+			_ = gateway.SetRoute(context.Background(), gw, nn.Block(), cfg.Tunnel())
 		}
-		_, _ = r.run(context.Background(), "rm", "-rf", p.Dir)
+		if targetStarted {
+			_, _ = r.Run(context.Background(), "chromebox", "kill", filepath.Base(p.Dir))
+		}
+		_, _ = r.Run(context.Background(), "rm", "-rf", p.Dir)
 		_ = c.ResumeVM(context.Background()) // errors if it was never paused; fine
 		err = fmt.Errorf("migration rolled back, source resumed: %w", err)
 	}()
 
 	// Everything before the pause is preparation and is not downtime.
-	if _, err := r.run(ctx, "true"); err != nil { // opens the shared ssh connection
+	if _, err := r.Run(ctx, "true"); err != nil { // opens the shared ssh connection
 		return nil, fmt.Errorf("cannot reach %s: %w", host, err)
 	}
 	sw.Lap("ssh connected")
-	if _, err := r.run(ctx, "mkdir", "-p", p.SnapDir()); err != nil {
+	if gw != nil {
+		if _, err := gw.Run(ctx, "true"); err != nil {
+			return nil, fmt.Errorf("cannot reach gateway %s: %w", cfg.Gateway, err)
+		}
+		sw.Lap("gateway connected")
+	}
+	if _, err := r.Run(ctx, "mkdir", "-p", p.SnapDir()); err != nil {
 		return nil, err
 	}
 	sw.Lap("target prepared")
-	if err := r.copyDisk(ctx, p, "-aS"); err != nil {
+	if err := copyDisk(ctx, r, p, "-aS"); err != nil {
 		return nil, err
 	}
 	sw.Lap("disk pre-copied")
@@ -96,13 +126,13 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 
 	// Memory and the disk delta are independent, so send them at the same time
 	// over the shared connection; the slower one sets the pace.
-	if err := r.copyState(ctx, p); err != nil {
+	if err := copyState(ctx, r, p); err != nil {
 		return nil, err
 	}
 	sw.Lap("memory + disk delta copied")
 
 	targetStarted = true
-	out, err := r.run(ctx, "chromebox", "accept", filepath.Base(p.Dir))
+	out, err := r.Run(ctx, "chromebox", "accept", filepath.Base(p.Dir))
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +142,22 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 	}
 	down := time.Since(downStart)
 	sw.Lap("restored on target")
+
+	// Point the network at the new node. The gateway's route to the VM's
+	// address block is the only thing that changes; the VM's address, MACs and
+	// TCP state are the same as before.
+	var reachable time.Duration
+	if gw != nil {
+		if rep.Node == "" {
+			return nil, fmt.Errorf("target did not report its node name; is %s configured?", "/var/lib/chromebox/node.json")
+		}
+		if err := gateway.SetRoute(ctx, gw, nn.Block(), "gre-"+rep.Node); err != nil {
+			return nil, err
+		}
+		flipped = true
+		reachable = time.Since(downStart)
+		sw.Lap("route flipped")
+	}
 
 	// The VM resumed from the snapshot if its next count follows the last one
 	// printed here. A reboot would print 1; a stale or wrong snapshot would
@@ -129,45 +175,7 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 	}
 	sw.Lap("source destroyed")
 
-	return &Result{Laps: sw, Downtime: down, Before: before, After: rep.After, Remote: rep.Laps}, nil
-}
-
-// remote runs commands on the target over one shared ssh connection, so that
-// setting up the connection (a TCP handshake plus key exchange) is paid once,
-// before the pause, and not inside the downtime.
-type remote struct {
-	host string
-	opts []string
-}
-
-func newRemote(host string) *remote {
-	home, _ := os.UserHomeDir()
-	return &remote{host: host, opts: []string{
-		"-i", filepath.Join(home, ".ssh", "chromebox_node"),
-		"-o", "IdentitiesOnly=yes",
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=/tmp/chromebox-ssh-%C",
-		"-o", "ControlPersist=60",
-	}}
-}
-
-// run executes a command on the target and returns its stdout.
-func (r *remote) run(ctx context.Context, argv ...string) ([]byte, error) {
-	args := append(append([]string{}, r.opts...), r.host)
-	args = append(args, argv...)
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ssh %s %v: %w: %s", r.host, argv, err, bytes.TrimSpace(stderr.Bytes()))
-	}
-	return stdout.Bytes(), nil
-}
-
-// sshCmd is the ssh command line rsync should use, sharing our connection.
-func (r *remote) sshCmd() string {
-	return "ssh " + strings.Join(r.opts, " ")
+	return &Result{Laps: sw, Downtime: down, Reachable: reachable, Before: before, After: rep.After, Remote: rep.Laps}, nil
 }
 
 // copyMemory streams the memory and device-state files of the snapshot to the
@@ -177,10 +185,9 @@ func (r *remote) sshCmd() string {
 // --sparse writes the runs of zeros as holes, so they cost nothing to send or
 // store (about 60% of a fresh guest's memory pages are all zeros). No
 // compression: it costs more CPU time than the network takes to move bytes.
-func (r *remote) copyMemory(ctx context.Context, p vm.Paths) error {
+func copyMemory(ctx context.Context, r *remote.Remote, p vm.Paths) error {
 	send := exec.CommandContext(ctx, "tar", "-C", p.SnapDir(), "--sparse", "--exclude=rootfs.ext4", "-cf", "-", ".")
-	args := append(append([]string{}, r.opts...), r.host, "tar", "-C", p.SnapDir(), "-xf", "-")
-	recv := exec.CommandContext(ctx, "ssh", args...)
+	recv := r.Command(ctx, "tar", "-C", p.SnapDir(), "-xf", "-")
 
 	pipe, err := send.StdoutPipe()
 	if err != nil {
@@ -213,12 +220,12 @@ func (r *remote) copyMemory(ctx context.Context, p vm.Paths) error {
 // a block-level comparison even when size and time look unchanged, and
 // --inplace rewrites only the blocks that differ in the file the first pass
 // already put there.
-func (r *remote) copyState(ctx context.Context, p vm.Paths) error {
+func copyState(ctx context.Context, r *remote.Remote, p vm.Paths) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 2)
-	go func() { errc <- r.copyMemory(ctx, p) }()
-	go func() { errc <- r.copyDisk(ctx, p, "-aI", "--inplace") }()
+	go func() { errc <- copyMemory(ctx, r, p) }()
+	go func() { errc <- copyDisk(ctx, r, p, "-aI", "--inplace") }()
 	var first error
 	for i := 0; i < 2; i++ {
 		if err := <-errc; err != nil && first == nil {
@@ -232,8 +239,8 @@ func (r *remote) copyState(ctx context.Context, p vm.Paths) error {
 // copyDisk brings the target's snapshot disk image up to date with this VM's
 // disk, using rsync, which sends only the blocks that differ from what the
 // target already has. flags are rsync options.
-func (r *remote) copyDisk(ctx context.Context, p vm.Paths, flags ...string) error {
-	args := append(flags, "-e", r.sshCmd(), p.Rootfs(), r.host+":"+p.SnapRootfs())
+func copyDisk(ctx context.Context, r *remote.Remote, p vm.Paths, flags ...string) error {
+	args := append(flags, "-e", r.SSHCmd(), p.Rootfs(), r.Host+":"+p.SnapRootfs())
 	if out, err := exec.CommandContext(ctx, "rsync", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("rsync disk: %w: %s", err, bytes.TrimSpace(out))
 	}
@@ -242,8 +249,8 @@ func (r *remote) copyDisk(ctx context.Context, p vm.Paths, flags ...string) erro
 
 // Discard destroys a VM on the target. Benchmarks use it to clean up.
 func Discard(ctx context.Context, p vm.Paths, host string) error {
-	r := newRemote(host)
-	_, _ = r.run(ctx, "chromebox", "kill", filepath.Base(p.Dir))
-	_, err := r.run(ctx, "rm", "-rf", p.Dir)
+	r := remote.New(host)
+	_, _ = r.Run(ctx, "chromebox", "kill", filepath.Base(p.Dir))
+	_, err := r.Run(ctx, "rm", "-rf", p.Dir)
 	return err
 }
