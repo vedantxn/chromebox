@@ -52,6 +52,8 @@ type Orchestrator struct {
 
 	mu   sync.RWMutex
 	seen map[string]nodeState
+
+	pending map[string]int // memory held on a node for migrations in flight (guarded by place)
 }
 
 func New(cfg Config) (*Orchestrator, error) {
@@ -65,7 +67,7 @@ func New(cfg Config) (*Orchestrator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}}, nil
+	return &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}}, nil
 }
 
 // Run serves the API and the CDP proxy until ctx ends.
@@ -93,6 +95,8 @@ func (o *Orchestrator) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/vms", o.listVMs)
 	mux.HandleFunc("DELETE /v1/vms/{id}", o.deleteVM)
 	mux.HandleFunc("GET /v1/nodes", o.listNodes)
+	mux.HandleFunc("POST /v1/vms/{id}/migrate", o.migrateVM)
+	mux.HandleFunc("POST /v1/nodes/{name}/drain", o.drainNode)
 	mux.HandleFunc("POST /v1/nodes/{name}/cordon", func(w http.ResponseWriter, r *http.Request) { o.cordon(w, r, true) })
 	mux.HandleFunc("POST /v1/nodes/{name}/uncordon", func(w http.ResponseWriter, r *http.Request) { o.cordon(w, r, false) })
 	return o.auth(mux)
@@ -162,7 +166,7 @@ func (o *Orchestrator) views() ([]NodeView, error) {
 	for _, n := range rows {
 		s := o.seen[n.Name]
 		v := NodeView{Name: n.Name, Cordoned: n.Cordoned, CapMemMiB: s.Status.CapMemMiB,
-			UsedMemMiB: used[n.Name], Bases: map[string]string{}}
+			UsedMemMiB: used[n.Name] + o.pending[n.Name], Bases: map[string]string{}}
 		v.Up = !s.Seen.IsZero() && time.Since(s.Seen) < o.cfg.HeartbeatTimeout
 		for _, b := range s.Status.Bases {
 			v.Bases[b.Name] = b.DiskSHA256

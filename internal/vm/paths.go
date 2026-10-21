@@ -66,4 +66,5 @@ func (p Paths) Vmstate() string    { return filepath.Join(p.MemDir(), "vmstate")
 func (p Paths) Mem() string        { return filepath.Join(p.MemDir(), "mem") }
 func (p Paths) SnapNet() string    { return filepath.Join(p.SnapDir(), "net") }
 func (p Paths) SnapImage() string  { return filepath.Join(p.SnapDir(), "image") }
+func (p Paths) SnapBase() string   { return filepath.Join(p.SnapDir(), "base") }
 func (p Paths) SnapRootfs() string { return filepath.Join(p.SnapDir(), "rootfs.ext4") }

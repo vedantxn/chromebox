@@ -186,6 +186,23 @@ func ctlCmd(args []string) error {
 			return fmt.Errorf("usage: chromebox ctl rm <id>")
 		}
 		return call("DELETE", "/v1/vms/"+args[1], nil, nil)
+	case "migrate", "drain":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: chromebox ctl migrate <id> [node] | drain <node>")
+		}
+		var out any
+		path := "/v1/vms/" + args[1] + "/migrate"
+		if len(args) > 2 {
+			path += "?to=" + args[2]
+		}
+		if args[0] == "drain" {
+			path = "/v1/nodes/" + args[1] + "/drain"
+		}
+		if err := call("POST", path, nil, &out); err != nil {
+			return err
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
 	case "cordon", "uncordon":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: chromebox ctl %s <node>", args[0])

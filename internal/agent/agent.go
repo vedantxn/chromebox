@@ -22,6 +22,9 @@ import (
 
 	"github.com/vedantxn/chromebox/internal/api"
 	"github.com/vedantxn/chromebox/internal/base"
+	"github.com/vedantxn/chromebox/internal/firecracker"
+	"github.com/vedantxn/chromebox/internal/migrate"
+	"github.com/vedantxn/chromebox/internal/remote"
 	"github.com/vedantxn/chromebox/internal/timing"
 	"github.com/vedantxn/chromebox/internal/vm"
 )
@@ -70,6 +73,11 @@ func (a *Agent) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /v1/vms", a.createVM)
 	mux.HandleFunc("DELETE /v1/vms/{id}", a.deleteVM)
+	mux.HandleFunc("POST /v1/vms/{id}/migrate", a.migrateOut)
+	mux.HandleFunc("POST /v1/vms/{id}/commit", a.commit)
+	mux.HandleFunc("POST /v1/vms/{id}/abort", a.abort)
+	mux.HandleFunc("POST /v1/incoming", a.incoming)
+	mux.HandleFunc("POST /v1/vms/{id}/accept", a.accept)
 	return a.auth(mux)
 }
 
@@ -110,6 +118,134 @@ func (a *Agent) createVM(w http.ResponseWriter, r *http.Request) {
 func (a *Agent) deleteVM(w http.ResponseWriter, r *http.Request) {
 	a.destroy(vm.PathsFor(r.PathValue("id")))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// migrateOut is the source half of a migration. It ends with the VM running on
+// the target and paused here; the orchestrator then moves the route and says
+// commit or abort. No disk pre-copy: the target clones the base disk it already
+// holds, and only the blocks this VM wrote since it was cloned travel.
+func (a *Agent) migrateOut(w http.ResponseWriter, r *http.Request) {
+	var req api.MigrateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TargetAgent == "" || req.TargetSSH == "" {
+		http.Error(w, "need target_agent and target_ssh", http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+	p := vm.PathsFor(id)
+	baseName := vm.BaseOf(p)
+	nn, _ := vm.NetOf(p)
+	if !alive(p) || baseName == "" || nn == nil {
+		http.Error(w, "no running VM made from a base: "+id, http.StatusNotFound)
+		return
+	}
+	ctx := r.Context()
+	target := NewClient(req.TargetAgent, a.cfg.Token)
+	rem := remote.New(req.TargetSSH)
+	sw := timing.Start()
+
+	if err := target.Incoming(ctx, api.IncomingRequest{ID: id, Base: baseName, NetIndex: nn.Index}); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if _, err := rem.Run(ctx, "true"); err != nil { // open the shared ssh connection before the pause
+		_ = target.DeleteVM(context.Background(), id)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	sw.Lap("target prepared")
+
+	c := firecracker.New(p.Socket())
+	paused := time.Now()
+	fail := func(code int, err error) {
+		_ = c.ResumeVM(context.Background())
+		_ = target.DeleteVM(context.Background(), id)
+		http.Error(w, "migration rolled back, source resumed: "+err.Error(), code)
+	}
+	if err := vm.Snapshot(ctx, c, p, vm.SnapshotOptions{Sync: false}, sw); err != nil {
+		fail(http.StatusInternalServerError, err)
+		return
+	}
+	delta, err := migrate.CopyState(ctx, rem, p, base.Disk(baseName))
+	if err != nil {
+		fail(http.StatusBadGateway, err)
+		return
+	}
+	sw.Lap("memory + disk delta sent")
+	tr, err := target.Accept(ctx, id)
+	if err != nil {
+		fail(http.StatusBadGateway, err)
+		return
+	}
+	sw.Lap("running on target")
+	_ = os.RemoveAll(p.MemDir())
+	writeJSON(w, http.StatusOK, api.MigrateResponse{Laps: sw.Record(), TargetLaps: tr.Laps,
+		PausedMs: float64(time.Since(paused).Microseconds()) / 1000, DeltaBytes: delta})
+}
+
+// commit ends a migration on the source: the VM now lives elsewhere.
+func (a *Agent) commit(w http.ResponseWriter, r *http.Request) {
+	a.destroy(vm.PathsFor(r.PathValue("id")))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// abort ends a failed migration on the source: resume the paused VM.
+func (a *Agent) abort(w http.ResponseWriter, r *http.Request) {
+	if err := firecracker.New(vm.PathsFor(r.PathValue("id")).Socket()).ResumeVM(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// incoming prepares this node to receive a VM: its directories, and its disk as
+// a clone of the base this node already holds. The source then sends only the
+// blocks that differ from the base.
+func (a *Agent) incoming(w http.ResponseWriter, r *http.Request) {
+	var req api.IncomingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" || req.Base == "" {
+		http.Error(w, "need id and base", http.StatusBadRequest)
+		return
+	}
+	if _, err := base.Read(req.Base); err != nil {
+		http.Error(w, "this node does not hold base "+req.Base, http.StatusConflict)
+		return
+	}
+	p := vm.PathsFor(req.ID)
+	a.destroy(p)
+	for _, d := range []string{p.SnapDir(), p.MemDir()} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := vm.CloneFile(base.Disk(req.Base), p.SnapRootfs()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// accept is the target half: restore the received snapshot and wait until the
+// browser answers.
+func (a *Agent) accept(w http.ResponseWriter, r *http.Request) {
+	p := vm.PathsFor(r.PathValue("id"))
+	sw := timing.Start()
+	if _, err := vm.Restore(r.Context(), p, sw); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := vm.WaitRestored(r.Context(), p, 0, 15*time.Second); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sw.Lap("browser answering")
+	for _, f := range [][2]string{{p.SnapBase(), p.BaseFile()}, {p.SnapNet(), p.NetFile()}, {p.SnapImage(), p.ImageFile()}} {
+		if b, err := os.ReadFile(f[0]); err == nil {
+			_ = os.WriteFile(f[1], b, 0o644)
+		}
+	}
+	_ = os.RemoveAll(p.MemDir()) // the VM has the memory mapped; unlinking frees it when the VM exits
+	writeJSON(w, http.StatusOK, api.CreateVMResponse{Laps: sw.Record()})
 }
 
 // destroy stops a VM and removes everything it left on this node. It is safe

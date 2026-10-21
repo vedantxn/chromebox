@@ -134,7 +134,7 @@ func Snapshot(ctx context.Context, c *firecracker.Client, p Paths, o SnapshotOpt
 	// The network identity and the image name are part of the snapshot:
 	// whoever restores it must recreate the same TAP and MACs, and must know
 	// how to tell that the guest is running again.
-	for _, f := range [][2]string{{p.NetFile(), p.SnapNet()}, {p.ImageFile(), p.SnapImage()}} {
+	for _, f := range [][2]string{{p.NetFile(), p.SnapNet()}, {p.ImageFile(), p.SnapImage()}, {p.BaseFile(), p.SnapBase()}} {
 		if b, err := os.ReadFile(f[0]); err == nil {
 			if err := os.WriteFile(f[1], b, 0o644); err != nil {
 				return err
@@ -227,4 +227,15 @@ func NetOf(p Paths) (*netsetup.Net, error) {
 		return &nn, err
 	}
 	return nil, nil
+}
+
+// BaseOf returns the base snapshot a VM was cloned from ("" if none), read from
+// its directory or from a received snapshot.
+func BaseOf(p Paths) string {
+	for _, f := range []string{p.BaseFile(), p.SnapBase()} {
+		if b, err := os.ReadFile(f); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
 }

@@ -67,3 +67,27 @@ func (c *Client) Status(ctx context.Context) (api.Status, error) {
 	err := c.do(ctx, http.MethodGet, "/v1/status", nil, &out)
 	return out, err
 }
+
+func (c *Client) Migrate(ctx context.Context, id string, req api.MigrateRequest) (api.MigrateResponse, error) {
+	var out api.MigrateResponse
+	err := c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/migrate", req, &out)
+	return out, err
+}
+
+func (c *Client) Incoming(ctx context.Context, req api.IncomingRequest) error {
+	return c.do(ctx, http.MethodPost, "/v1/incoming", req, nil)
+}
+
+func (c *Client) Accept(ctx context.Context, id string) (api.CreateVMResponse, error) {
+	var out api.CreateVMResponse
+	err := c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/accept", nil, &out)
+	return out, err
+}
+
+func (c *Client) Commit(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/commit", nil, nil)
+}
+
+func (c *Client) Abort(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/abort", nil, nil)
+}

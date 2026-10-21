@@ -140,7 +140,7 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 
 	// Memory and the disk delta are independent, so send them at the same time
 	// over the shared connection; the slower one sets the pace.
-	deltaBytes, err := copyState(ctx, r, p, ref)
+	deltaBytes, err := CopyState(ctx, r, p, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -240,9 +240,10 @@ func copyMemory(ctx context.Context, r *remote.Remote, p vm.Paths) error {
 	return nil
 }
 
-// copyState sends the memory files and the disk delta concurrently and returns
-// the size of the delta and the first error, if any.
-func copyState(ctx context.Context, r *remote.Remote, p vm.Paths, ref string) (int64, error) {
+// CopyState sends the snapshot's memory and the disk delta against ref
+// concurrently, and returns the size of the delta. The target must already
+// hold a copy of ref at p.SnapRootfs().
+func CopyState(ctx context.Context, r *remote.Remote, p vm.Paths, ref string) (int64, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 2)

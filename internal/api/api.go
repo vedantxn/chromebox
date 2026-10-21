@@ -77,3 +77,25 @@ type Node struct {
 	UsedMiB   int    `json:"used_mem_mib"`
 	AgentURL  string `json:"agent_url"`
 }
+
+// MigrateRequest asks a source agent to move one of its VMs to another node.
+type MigrateRequest struct {
+	TargetAgent string `json:"target_agent"` // the target agent's URL
+	TargetSSH   string `json:"target_ssh"`   // ssh target for the bulk data, e.g. ec2-user@10.0.0.5
+}
+
+// MigrateResponse: the VM now runs on the target and is paused on the source,
+// waiting for commit (destroy the source copy) or abort (resume it).
+type MigrateResponse struct {
+	Laps       timing.Record `json:"laps"`
+	TargetLaps timing.Record `json:"target_laps"`
+	PausedMs   float64       `json:"paused_ms"` // source paused -> running on the target
+	DeltaBytes int64         `json:"delta_bytes"`
+}
+
+// IncomingRequest tells a target agent to get ready for a VM.
+type IncomingRequest struct {
+	ID       string `json:"id"`
+	Base     string `json:"base"`
+	NetIndex int    `json:"net_index"`
+}
