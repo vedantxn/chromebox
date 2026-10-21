@@ -7,13 +7,17 @@
 //	chromebox snapshot <id> [nosync]  pause the VM and save vmstate, memory and disk; leaves it paused
 //	chromebox restore <id>            bring the VM back from its snapshot, running
 //	chromebox kill <id>               stop the VM's Firecracker process
+//	chromebox migrate <id> <host>     move a running VM to another node (host: ssh target)
+//	chromebox accept <id>             target side of migrate: restore a received snapshot, print a JSON report
 //	chromebox bench-boot <n>          boot n VMs and summarize the timings
 //	chromebox bench-snapshot <n>      take n snapshots of a running VM and summarize
 //	chromebox bench-restore <n>       restore one snapshot n times and summarize
+//	chromebox bench-migrate <n> <host> [gap-seconds]  migrate n freshly booted VMs and summarize
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -21,11 +25,12 @@ import (
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/firecracker"
+	"github.com/vedantxn/chromebox/internal/migrate"
 	"github.com/vedantxn/chromebox/internal/timing"
 	"github.com/vedantxn/chromebox/internal/vm"
 )
 
-const usage = "usage: chromebox boot|status|pause|resume|snapshot|restore|kill <id> | bench-boot|bench-snapshot|bench-restore <n>"
+const usage = "usage: chromebox boot|status|pause|resume|snapshot|restore|kill|accept <id> | migrate <id> <host> | bench-boot|bench-snapshot|bench-restore <n> | bench-migrate <n> <host>"
 
 func main() {
 	if len(os.Args) < 3 {
@@ -63,6 +68,29 @@ func main() {
 		err = restoreCmd(ctx, p)
 	case "kill":
 		err = vm.Kill(p)
+	case "accept":
+		err = accept(ctx, p)
+	case "migrate":
+		if len(os.Args) < 4 {
+			err = fmt.Errorf("usage: chromebox migrate <id> <host>")
+			break
+		}
+		err = migrateCmd(ctx, p, os.Args[3])
+	case "bench-migrate":
+		if len(os.Args) < 4 {
+			err = fmt.Errorf("usage: chromebox bench-migrate <n> <host>")
+			break
+		}
+		var n int
+		gap := 5
+		if len(os.Args) > 4 {
+			if gap, err = strconv.Atoi(os.Args[4]); err != nil {
+				break
+			}
+		}
+		if n, err = strconv.Atoi(arg); err == nil {
+			err = benchMigrate(ctx, n, os.Args[3], time.Duration(gap)*time.Second)
+		}
 	case "bench-boot", "bench-snapshot", "bench-restore":
 		var n int
 		if n, err = strconv.Atoi(arg); err != nil {
@@ -151,6 +179,39 @@ func restoreCmd(ctx context.Context, p vm.Paths) error {
 	return nil
 }
 
+// accept is the target half of a migration. The source has copied a snapshot
+// into this node's p.SnapDir(); restore it and report the first count the guest
+// prints, as JSON on stdout (nothing else may be printed there).
+func accept(ctx context.Context, p vm.Paths) error {
+	from := vm.LogSize(p)
+	sw := timing.Start()
+	if _, err := vm.Restore(ctx, p, sw); err != nil {
+		return err
+	}
+	after, err := vm.WaitForCount(ctx, p, from, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	sw.Lap("first new count (ready)")
+	return json.NewEncoder(os.Stdout).Encode(migrate.Report{After: after, Laps: sw.Record()})
+}
+
+func migrateCmd(ctx context.Context, p vm.Paths, host string) error {
+	res, err := migrate.Run(ctx, p, host)
+	if err != nil {
+		return err
+	}
+	fmt.Println("on this node:")
+	res.Laps.Print(os.Stdout)
+	fmt.Println("\non the target (inside 'restored on target'):")
+	for _, l := range res.Remote.Laps {
+		fmt.Printf("%-26s %10.1f\n", l.Name, l.StepMs)
+	}
+	fmt.Printf("\nlast count on source: %d   first count on target: %d\n", res.Before, res.After)
+	fmt.Printf("DOWNTIME (paused -> counting on target): %.1f ms\n", ms(res.Downtime))
+	return nil
+}
+
 func status(ctx context.Context, p vm.Paths) error {
 	info, err := firecracker.New(p.Socket()).DescribeInstance(ctx)
 	if err != nil {
@@ -195,6 +256,17 @@ func (s *samples) add(sw *timing.Stopwatch) {
 		s.perStep[name] = append(s.perStep[name], d)
 	}
 	s.totals = append(s.totals, total)
+}
+
+// addRecord adds a run reported as data (e.g. by another node) instead of
+// measured by a local stopwatch.
+func (s *samples) addRecord(r timing.Record) {
+	s.names = s.names[:0]
+	for _, l := range r.Laps {
+		s.names = append(s.names, l.Name)
+		s.perStep[l.Name] = append(s.perStep[l.Name], time.Duration(l.StepMs*float64(time.Millisecond)))
+	}
+	s.totals = append(s.totals, time.Duration(r.TotalMs*float64(time.Millisecond)))
 }
 
 func (s *samples) print(totalLabel string) {
@@ -294,5 +366,40 @@ func benchRestore(ctx context.Context, n int) error {
 	}
 	s.print("TOTAL (ask -> ready)")
 	fmt.Printf("\ncounter at snapshot: %d; first count after each restore: %v\n", atSnapshot, resumedAt)
+	return nil
+}
+
+// benchMigrate boots n counter VMs on this node, migrates each to host, and
+// summarizes the steps on both nodes and the downtime. gap is the pause between
+// runs, so one migration's disk write-back doesn't slow the next.
+func benchMigrate(ctx context.Context, n int, host string, gap time.Duration) error {
+	local, remote := newSamples(), newSamples()
+	var downtimes []time.Duration
+	for i := 1; i <= n; i++ {
+		p := vm.PathsFor(fmt.Sprintf("mig-%d", i))
+		_ = os.RemoveAll(p.Dir)
+		if _, err := boot(ctx, p, "counter"); err != nil {
+			return fmt.Errorf("run %d: boot: %w", i, err)
+		}
+		time.Sleep(time.Second) // let the guest run and dirty some memory first
+		res, err := migrate.Run(ctx, p, host)
+		if err != nil {
+			return fmt.Errorf("run %d: %w", i, err)
+		}
+		local.add(res.Laps)
+		remote.addRecord(res.Remote)
+		downtimes = append(downtimes, res.Downtime)
+		fmt.Printf("run %2d: downtime %7.1f ms   (count %d -> %d)\n", i, ms(res.Downtime), res.Before, res.After)
+		if err := migrate.Discard(ctx, p, host); err != nil {
+			return err
+		}
+		time.Sleep(gap) // let the target's disk write-back settle between runs
+	}
+	fmt.Printf("\non the source node:\n")
+	local.print("TOTAL (whole migrate)")
+	fmt.Printf("\non the target node (inside 'restored on target'):\n")
+	remote.print("TOTAL (restore on target)")
+	d := timing.Summarize(downtimes)
+	fmt.Printf("\nDOWNTIME (paused -> counting on target), n=%d:  p50 %.1f ms   p95 %.1f ms   max %.1f ms\n", len(downtimes), ms(d.P50), ms(d.P95), ms(d.Max))
 	return nil
 }

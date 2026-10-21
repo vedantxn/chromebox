@@ -46,31 +46,37 @@ func (s *Stopwatch) Print(w io.Writer) {
 	}
 }
 
-// record is the JSON shape saved per run, so many runs can be compared later.
-type record struct {
+// Record is the JSON shape of a finished run. It is saved per run, and a node
+// sends it to the orchestrating node as its report.
+type Record struct {
 	StartedAt time.Time   `json:"started_at"`
 	TotalMs   float64     `json:"total_ms"`
-	Laps      []lapRecord `json:"laps"`
+	Laps      []LapRecord `json:"laps"`
 }
 
-type lapRecord struct {
+type LapRecord struct {
 	Name    string  `json:"name"`
 	StepMs  float64 `json:"step_ms"`
 	TotalMs float64 `json:"total_ms"`
 }
 
-// Save writes the laps to path as JSON.
-func (s *Stopwatch) Save(path string) error {
-	r := record{StartedAt: s.start}
+// Record returns the laps as plain data.
+func (s *Stopwatch) Record() Record {
+	r := Record{StartedAt: s.start}
 	var prev time.Duration
 	for _, l := range s.laps {
-		r.Laps = append(r.Laps, lapRecord{Name: l.name, StepMs: ms(l.at - prev), TotalMs: ms(l.at)})
+		r.Laps = append(r.Laps, LapRecord{Name: l.name, StepMs: ms(l.at - prev), TotalMs: ms(l.at)})
 		prev = l.at
 	}
 	if n := len(s.laps); n > 0 {
 		r.TotalMs = ms(s.laps[n-1].at)
 	}
-	b, err := json.MarshalIndent(r, "", "  ")
+	return r
+}
+
+// Save writes the laps to path as JSON.
+func (s *Stopwatch) Save(path string) error {
+	b, err := json.MarshalIndent(s.Record(), "", "  ")
 	if err != nil {
 		return err
 	}
