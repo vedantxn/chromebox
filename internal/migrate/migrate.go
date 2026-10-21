@@ -153,7 +153,7 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 	}
 
 	targetStarted = true
-	out, err := r.Run(ctx, "chromebox", "accept", filepath.Base(p.Dir))
+	out, err := r.Run(ctx, append(passEnv(), "chromebox", "accept", filepath.Base(p.Dir))...)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +168,7 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 	// address block is the only thing that changes; the VM's address, MACs and
 	// TCP state are the same as before.
 	var reachable time.Duration
-	if gw != nil {
+	if gw != nil && os.Getenv("CHROMEBOX_FAULT") != "no-flip" { // no-flip: fault injection
 		if rep.Node == "" {
 			return nil, fmt.Errorf("target did not report its node name; is %s configured?", "/var/lib/chromebox/node.json")
 		}
@@ -340,4 +340,17 @@ func Discard(ctx context.Context, p vm.Paths, host string) error {
 	_, _ = r.Run(ctx, "chromebox", "kill", filepath.Base(p.Dir))
 	_, err := r.Run(ctx, "rm", "-rf", p.Dir)
 	return err
+}
+
+// passEnv makes a command run through ssh on the target see the settings used
+// for break-it tests (fault injection) and the clock option; ssh itself does
+// not forward the environment.
+func passEnv() []string {
+	args := []string{"env"}
+	for _, k := range []string{"CHROMEBOX_FAULT", "CHROMEBOX_CLOCK_REALTIME"} {
+		if v := os.Getenv(k); v != "" {
+			args = append(args, k+"="+v)
+		}
+	}
+	return args
 }

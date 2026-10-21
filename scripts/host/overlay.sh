@@ -77,6 +77,9 @@ sudo ip link set gre-gw up
 ip rule show | grep -q 'to 10.200.0.0/16 lookup main' || sudo ip rule add pref 90 to 10.200.0.0/16 lookup main
 ip rule show | grep -q 'from 10.200.0.0/16 lookup 100' || sudo ip rule add pref 100 from 10.200.0.0/16 lookup 100
 sudo ip route replace default dev gre-gw table 100
+# A VM's address with no VM behind it is a dead end, not a hairpin: without this,
+# packets for a departed VM would match the default route and leave the node.
+sudo ip route replace unreachable 10.200.0.0/16 metric 500
 printf '{"name":"%s","gateway":"ec2-user@%s"}\n' "$NAME" "$GW_IP" | sudo tee /var/lib/chromebox/node.json >/dev/null
 echo "tunnel gre-gw -> $GW_IP; node.json written"
 EOS

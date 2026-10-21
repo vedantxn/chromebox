@@ -35,7 +35,7 @@ log(`connected; page marker ${marker}; running ${seconds}s, one request every 10
 const stalls = [];
 const errors = [];
 let samples = 0, lastTick = -1, backwards = 0, markerChanged = 0;
-let firstSkew = null, lastSkew = null;
+let firstSkew = null, lastSkew = null; // lastSkew is also null before the first sample
 let prevRecv = performance.now();
 const end = Date.now() + Number(seconds) * 1000;
 
@@ -56,8 +56,12 @@ while (Date.now() < end) {
     if (r.tick < lastTick) backwards++;
     lastTick = r.tick;
     if (r.marker !== marker) markerChanged++;
-    lastSkew = Date.now() - r.now; // agent clock minus guest clock
-    firstSkew ??= lastSkew;
+    const skew = Date.now() - r.now; // agent clock minus guest clock
+    if (lastSkew !== null && Math.abs(skew - lastSkew) > 500) {
+      log(`guest clock offset changed: ${Math.round(lastSkew)} -> ${Math.round(skew)} ms`);
+    }
+    lastSkew = skew;
+    firstSkew ??= skew;
   } catch (e) {
     errors.push(String(e.message ?? e).split('\n')[0]);
     log('!! request failed:', errors.at(-1));

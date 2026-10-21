@@ -172,6 +172,8 @@ func Restore(ctx context.Context, p Paths, sw *timing.Stopwatch) (*firecracker.C
 		SnapshotPath: p.Vmstate(),
 		MemBackend:   firecracker.MemBackend{BackendType: "File", BackendPath: p.Mem()},
 		ResumeVM:     true,
+		// Off by default: see docs/learn/m2.md (C5) for why.
+		ClockRealtime: os.Getenv("CHROMEBOX_CLOCK_REALTIME") != "",
 	}); err != nil {
 		return nil, err
 	}

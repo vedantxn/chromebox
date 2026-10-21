@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -90,8 +91,12 @@ func (n Net) EnsureTap(uid, gid int) error {
 	if _, err := net.InterfaceByName(n.TapName); err != nil {
 		cmds = append(cmds, fmt.Sprintf("tuntap add dev %s mode tap user %d group %d", n.TapName, uid, gid))
 	}
+	mac := n.TapMAC
+	if os.Getenv("CHROMEBOX_FAULT") == "tap-mac" { // fault injection for break-it tests
+		mac = "06:00:de:ad:be:ef"
+	}
 	cmds = append(cmds,
-		fmt.Sprintf("link set dev %s address %s", n.TapName, n.TapMAC),
+		fmt.Sprintf("link set dev %s address %s", n.TapName, mac),
 		fmt.Sprintf("addr replace %s/30 dev %s", n.TapIP, n.TapName),
 		fmt.Sprintf("link set dev %s up", n.TapName),
 	)

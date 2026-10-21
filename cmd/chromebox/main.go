@@ -15,7 +15,7 @@
 //	chromebox bench-boot <n> [image]  boot n VMs and summarize the timings
 //	chromebox bench-snapshot <n>      take n snapshots of a running VM and summarize
 //	chromebox bench-restore <n>       restore one snapshot n times and summarize
-//	chromebox bench-migrate <n> <host> [gap-seconds]  migrate n freshly booted VMs and summarize
+//	chromebox bench-migrate <n> <host> [gap-seconds] [image]  migrate n freshly booted VMs and summarize
 package main
 
 import (
@@ -107,14 +107,17 @@ func main() {
 			break
 		}
 		var n int
-		gap := 5
+		gap, image := 5, "counter"
 		if len(os.Args) > 4 {
 			if gap, err = strconv.Atoi(os.Args[4]); err != nil {
 				break
 			}
 		}
+		if len(os.Args) > 5 {
+			image = os.Args[5]
+		}
 		if n, err = strconv.Atoi(arg); err == nil {
-			err = benchMigrate(ctx, n, os.Args[3], time.Duration(gap)*time.Second)
+			err = benchMigrate(ctx, n, os.Args[3], time.Duration(gap)*time.Second, image)
 		}
 	case "bench-boot", "bench-snapshot", "bench-restore":
 		var n int
@@ -475,13 +478,17 @@ func benchRestore(ctx context.Context, n int) error {
 // benchMigrate boots n counter VMs on this node, migrates each to host, and
 // summarizes the steps on both nodes and the downtime. gap is the pause between
 // runs, so one migration's disk write-back doesn't slow the next.
-func benchMigrate(ctx context.Context, n int, host string, gap time.Duration) error {
+func benchMigrate(ctx context.Context, n int, host string, gap time.Duration, image string) error {
 	local, remote := newSamples(), newSamples()
 	var downtimes []time.Duration
 	for i := 1; i <= n; i++ {
 		p := vm.PathsFor(fmt.Sprintf("mig-%d", i))
 		_ = os.RemoveAll(p.Dir)
-		if _, err := boot(ctx, p, "counter", 0); err != nil {
+		netIndex := 0
+		if image != "counter" {
+			netIndex = 10 + i // a networked VM needs its own address block
+		}
+		if _, err := boot(ctx, p, image, netIndex); err != nil {
 			return fmt.Errorf("run %d: boot: %w", i, err)
 		}
 		time.Sleep(time.Second) // let the guest run and dirty some memory first
@@ -492,7 +499,11 @@ func benchMigrate(ctx context.Context, n int, host string, gap time.Duration) er
 		local.add(res.Laps)
 		remote.addRecord(res.Remote)
 		downtimes = append(downtimes, res.Downtime)
-		fmt.Printf("run %2d: downtime %7.1f ms   (count %d -> %d)\n", i, ms(res.Downtime), res.Before, res.After)
+		counts := ""
+		if res.After > 0 {
+			counts = fmt.Sprintf("   (count %d -> %d)", res.Before, res.After)
+		}
+		fmt.Printf("run %2d: downtime %7.1f ms%s\n", i, ms(res.Downtime), counts)
 		if err := migrate.Discard(ctx, p, host); err != nil {
 			return err
 		}
@@ -503,6 +514,6 @@ func benchMigrate(ctx context.Context, n int, host string, gap time.Duration) er
 	fmt.Printf("\non the target node (inside 'restored on target'):\n")
 	remote.print("TOTAL (restore on target)")
 	d := timing.Summarize(downtimes)
-	fmt.Printf("\nDOWNTIME (paused -> counting on target), n=%d:  p50 %.1f ms   p95 %.1f ms   max %.1f ms\n", len(downtimes), ms(d.P50), ms(d.P95), ms(d.Max))
+	fmt.Printf("\nDOWNTIME (paused -> running on target), n=%d:  p50 %.1f ms   p95 %.1f ms   max %.1f ms\n", len(downtimes), ms(d.P50), ms(d.P95), ms(d.Max))
 	return nil
 }

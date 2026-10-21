@@ -61,6 +61,10 @@ type SnapshotLoad struct {
 	SnapshotPath string     `json:"snapshot_path"`
 	MemBackend   MemBackend `json:"mem_backend"`
 	ResumeVM     bool       `json:"resume_vm"`
+	// ClockRealtime advances the guest's clock by the wall-clock time that
+	// passed since the snapshot (x86 only). Without it the guest clock resumes
+	// where it stopped and is behind by the length of the pause.
+	ClockRealtime bool `json:"clock_realtime,omitempty"`
 }
 
 type vmState struct {
