@@ -1,0 +1,65 @@
+package orchestrator
+
+import (
+	"path/filepath"
+	"sync"
+	"testing"
+)
+
+func openTest(t *testing.T) *Store {
+	t.Helper()
+	s, err := Open(filepath.Join(t.TempDir(), "o.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+func TestIndexIsTheLowestFreeAndNeverShared(t *testing.T) {
+	s := openTest(t)
+	a, _ := s.InsertVM("a", "node-a", "chrome", 1024)
+	b, _ := s.InsertVM("b", "node-a", "chrome", 1024)
+	c, _ := s.InsertVM("c", "node-b", "chrome", 1024)
+	if a.NetIndex != 1 || b.NetIndex != 2 || c.NetIndex != 3 {
+		t.Fatalf("indexes %d %d %d", a.NetIndex, b.NetIndex, c.NetIndex)
+	}
+	s.DeleteVM("b") // frees 2
+	d, _ := s.InsertVM("d", "node-b", "chrome", 1024)
+	if d.NetIndex != 2 {
+		t.Fatalf("a freed index should be reused first: got %d", d.NetIndex)
+	}
+}
+
+func TestConcurrentInsertsGetDistinctIndexes(t *testing.T) {
+	s := openTest(t)
+	var wg sync.WaitGroup
+	seen := sync.Map{}
+	for i := 0; i < 30; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			v, err := s.InsertVM(string(rune('a'+i%26))+string(rune('a'+i/26)), "n", "chrome", 1)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if _, dup := seen.LoadOrStore(v.NetIndex, v.ID); dup {
+				t.Errorf("index %d handed out twice", v.NetIndex)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestUsedMemCountsEverythingButLostVMs(t *testing.T) {
+	s := openTest(t)
+	s.InsertVM("a", "node-a", "chrome", 1024)
+	s.InsertVM("b", "node-a", "chrome", 1024) // still "creating": it already takes its space
+	s.InsertVM("c", "node-b", "chrome", 1024)
+	s.SetState("c", StateLost)
+	used, _ := s.UsedMem()
+	if used["node-a"] != 2048 || used["node-b"] != 0 {
+		t.Fatalf("used = %v", used)
+	}
+}

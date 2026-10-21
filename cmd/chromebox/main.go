@@ -8,6 +8,10 @@
 //	chromebox snapshot <id> [nosync]  pause the VM and save vmstate, memory and disk; leaves it paused
 //	chromebox restore <id>            bring the VM back from its snapshot, running
 //	chromebox base build <name> <image>  boot an image, let it settle, snapshot it as a base
+//	chromebox base push <name> <host>  copy a base snapshot to another node
+//	chromebox agent <listen>          run the node agent (heartbeats to the orchestrator)
+//	chromebox orchestrator <listen>   run the control plane (API on <listen>, CDP proxy on :9222)
+//	chromebox ctl create|ls|nodes|rm|cordon|uncordon   talk to the orchestrator
 //	chromebox clone <id> <base> net=N  make a VM from a base snapshot with network index N
 //	chromebox bench-clone <n> <base>   clone n VMs one at a time and summarize the timings
 //	chromebox kill <id>               stop the VM's Firecracker process
@@ -92,6 +96,12 @@ func main() {
 		err = restoreCmd(ctx, p)
 	case "kill":
 		err = killCmd(ctx, p)
+	case "agent":
+		err = runAgent(arg)
+	case "orchestrator":
+		err = runOrchestrator(arg)
+	case "ctl":
+		err = ctlCmd(os.Args[2:])
 	case "guest-ping":
 		err = guestPing(ctx, p)
 	case "base":
@@ -348,8 +358,11 @@ func guestPing(ctx context.Context, p vm.Paths) error {
 
 // baseCmd: `base build <name> <image>`.
 func baseCmd(ctx context.Context, args []string) error {
+	if len(args) == 3 && args[0] == "push" {
+		return basePush(ctx, args[1], args[2])
+	}
 	if len(args) != 3 || args[0] != "build" {
-		return fmt.Errorf("usage: chromebox base build <name> <image>")
+		return fmt.Errorf("usage: chromebox base build <name> <image> | base push <name> <ssh-target>")
 	}
 	sw := timing.Start()
 	if err := base.Build(ctx, args[1], args[2], 3*time.Second, sw); err != nil {

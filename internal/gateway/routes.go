@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"net/netip"
+	"os/exec"
 
 	"github.com/vedantxn/chromebox/internal/remote"
 )
@@ -22,5 +25,22 @@ func DelRoute(ctx context.Context, gw *remote.Remote, block netip.Prefix) error 
 	if err != nil {
 		return nil
 	}
+	return nil
+}
+
+// SetRouteLocal is SetRoute for the machine that is itself the gateway (the
+// control-plane host, where the orchestrator runs): no ssh, just `ip`.
+func SetRouteLocal(ctx context.Context, block netip.Prefix, tunnel string) error {
+	out, err := exec.CommandContext(ctx, "sudo", "ip", "route", "replace", block.String(), "dev", tunnel).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ip route replace %s dev %s: %w: %s", block, tunnel, err, bytes.TrimSpace(out))
+	}
+	return nil
+}
+
+// DelRouteLocal removes a VM's route on the local machine. A route that is
+// already gone is not an error.
+func DelRouteLocal(ctx context.Context, block netip.Prefix) error {
+	_ = exec.CommandContext(ctx, "sudo", "ip", "route", "del", block.String()).Run()
 	return nil
 }

@@ -35,3 +35,8 @@ aws ec2 authorize-security-group-ingress --group-id "$sg" \
 aws ec2 authorize-security-group-ingress --group-id "$sg" \
   --protocol tcp --port 9222 --cidr "$myip/32" >/dev/null 2>&1 \
   && echo "allowed cdp (9222) from $myip" || echo "cdp from $myip already allowed"
+
+# The orchestrator's API (for `chromebox ctl` run from this machine), also only from here.
+aws ec2 authorize-security-group-ingress --group-id "$sg" \
+  --protocol tcp --port 8080 --cidr "$myip/32" >/dev/null 2>&1 \
+  && echo "allowed api (8080) from $myip" || echo "api from $myip already allowed"

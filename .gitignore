@@ -12,3 +12,4 @@ vmlinux*
 *.sock
 node_modules/
 scripts/demo/*.png
+scripts/aws/token
