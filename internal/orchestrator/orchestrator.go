@@ -305,7 +305,7 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 			return err // the node is up and refused: keep the record so it can be retried
 		}
 	}
-	o.store.endSessionRecord(id, "ended")
+	o.store.endSessionRecord(id, "closed")
 	return o.store.DeleteVM(id)
 }
 

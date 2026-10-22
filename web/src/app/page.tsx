@@ -1,7 +1,8 @@
-import { auth, signIn } from '@/auth';
+import { auth } from '@/auth';
+import SignIn from './sign-in';
 import Link from 'next/link';
 
-const quickstart = `npm install batonvm playwright-core
+const quickstart = `npm install https://batonvm.vercel.app/batonvm-0.1.0.tgz playwright-core
 
 import { Baton } from 'batonvm';
 import { chromium } from 'playwright-core';
@@ -33,11 +34,7 @@ export default async function Home() {
             Open dashboard
           </Link>
         ) : (
-          <form action={async () => { 'use server'; await signIn('github', { redirectTo: '/dashboard' }); }}>
-            <button className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white dark:bg-white dark:text-zinc-900">
-              Sign in with GitHub
-            </button>
-          </form>
+          <SignIn />
         )}
         <Link href="/docs" className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium dark:border-zinc-700">
           Quickstart

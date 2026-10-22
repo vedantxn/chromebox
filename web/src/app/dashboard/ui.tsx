@@ -50,7 +50,7 @@ export default function Dashboard() {
             <li key={k.id} className="flex items-center justify-between py-2">
               <span><code className="font-mono">{k.prefix}…</code> <span className="text-zinc-500">{k.name}</span></span>
               {k.revoked ? <span className="text-zinc-400">revoked</span> : (
-                <button className="text-red-600 hover:underline" onClick={async () => { await fetch(`/api/v1/keys/${k.id}`, { method: 'DELETE' }); load(); }}>Revoke</button>
+                <button className="text-red-600 hover:underline" onClick={async () => { await fetch(`/api/v1/keys/${k.id}`, { method: 'DELETE' }); setNewKey(null); load(); }}>Revoke</button>
               )}
             </li>
           ))}
