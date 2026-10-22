@@ -1,6 +1,6 @@
 import Link from 'next/link';
 
-const install = `npm install https://batonvm.vercel.app/batonvm-0.1.0.tgz playwright-core
+const install = `npm install https://batonvm.vercel.app/batonvm-0.2.0.tgz playwright-core
 export BATON_API_KEY=bk_...`;
 
 const quickstart = `import { Baton } from 'batonvm';
@@ -18,6 +18,11 @@ console.log(await page.title());
 const move = await session.migrate(); // the browser changes machines mid-script
 console.log(\`moved \${move.from} → \${move.to}, paused \${move.pausedMs} ms\`);
 console.log(await page.title()); // same page, same connection
+
+const { sessions: [copy] } = await session.fork(1); // a copy: same pages, cookies, storage
+const twin = await chromium.connectOverCDP(copy.connectUrl);
+console.log(twin.contexts()[0].pages().map((p) => p.url()));
+await copy.close();
 
 await session.close();`;
 
@@ -49,6 +54,7 @@ export default function Docs() {
             ['GET /api/v1/sessions[/:id]', 'your sessions'],
             ['DELETE /api/v1/sessions/:id', 'end it'],
             ['POST /api/v1/sessions/:id/migrate', 'move it to another machine, connection kept'],
+            ['POST /api/v1/sessions/:id/fork {count}', 'copy the running browser into new sessions (same pages, cookies, storage)'],
             ['POST /api/v1/sessions/:id/live', 'a short-lived URL to watch it'],
             ['GET /api/v1/usage', 'sessions running, minutes used today'],
           ].map(([a, b]) => <tr key={a}><td className="py-2 pr-4 font-mono">{a}</td><td className="py-2 text-zinc-600 dark:text-zinc-400">{b}</td></tr>)}

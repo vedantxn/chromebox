@@ -16,6 +16,8 @@ export default function Live({ id }: { id: string }) {
   const [status, setStatus] = useState('connecting');
   const [moves, setMoves] = useState<Move[]>([]);
   const [busy, setBusy] = useState(false);
+  const [fork, setFork] = useState<{ pausedMs?: number; sessions?: { id: string }[]; error?: string } | null>(null);
+  const [forking, setForking] = useState(false);
   const [url, setUrl] = useState('https://example.com');
   const ws = useRef<WebSocket | null>(null);
   const cdpId = useRef(1);
@@ -86,6 +88,13 @@ export default function Live({ id }: { id: string }) {
     return () => { closed = true; ws.current?.close(); };
   }, [id, send]);
 
+  // Fork: a copy of this browser, its pages, cookies and storage, in a new session.
+  const forkOne = async () => {
+    setForking(true);
+    const r = await fetch(`/api/v1/sessions/${id}/fork`, { method: 'POST', body: JSON.stringify({ count: 1 }) });
+    setFork(await r.json());
+    setForking(false);
+  };
   const migrate = async () => {
     setBusy(true);
     const r = await fetch(`/api/v1/sessions/${id}/migrate`, { method: 'POST' });
@@ -123,8 +132,21 @@ export default function Live({ id }: { id: string }) {
             className="rounded-md bg-zinc-900 px-3 py-1.5 text-white disabled:opacity-40 dark:bg-white dark:text-zinc-900">
             {busy ? 'Moving…' : 'Migrate now'}
           </button>
+          <button disabled={forking || sess?.status !== 'running'} onClick={forkOne}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 disabled:opacity-40 dark:border-zinc-700">
+            {forking ? 'Forking…' : 'Fork'}
+          </button>
           <button onClick={end} className="rounded-md border border-zinc-300 px-3 py-1.5 dark:border-zinc-700">End</button>
         </div>
+        {fork && (
+          <p className="text-xs text-zinc-500">
+            {fork.error ? <span className="text-red-600">{fork.error}</span> : <>
+              Forked (this browser paused {fork.pausedMs?.toFixed(0)} ms):{' '}
+              {fork.sessions?.map((s) => <a key={s.id} href={`/dashboard/sessions/${s.id}`} className="font-mono underline">{s.id}</a>)}
+              {' '}has the same pages, cookies and storage.
+            </>}
+          </p>
+        )}
         <div>
           <p className="text-zinc-500">Migrations</p>
           <ul className="mt-1 space-y-2">

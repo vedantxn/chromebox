@@ -38,6 +38,16 @@ export interface Migration {
   unreachableMs: number;
 }
 
+export interface Fork {
+  parent: string;
+  /** How long the parent was paused while its snapshot was taken. */
+  pausedMs: number;
+  /** The copies, each with its own connectUrl. */
+  sessions: Session[];
+  /** Copies that could not be started (e.g. over a limit). */
+  errors: string[];
+}
+
 export interface Usage {
   running: number;
   max_running: number;
@@ -79,6 +89,15 @@ export class Session implements SessionData {
     return this.client.sessions.migrate(this.id);
   }
 
+  /**
+   * Copy this running browser into `count` new sessions: same open pages,
+   * cookies and storage (a logged-in site stays logged in), each its own
+   * browser with its own connectUrl. Each copy counts against your limits.
+   */
+  fork(count = 1): Promise<Fork> {
+    return this.client.sessions.fork(this.id, count);
+  }
+
   /** A short-lived URL for watching the browser (CDP screencast). */
   async liveUrl(): Promise<string> {
     const r = await this.client.request<{ url: string }>('POST', `/api/v1/sessions/${this.id}/live`);
@@ -109,6 +128,10 @@ export class Baton {
       await this.request('DELETE', `/api/v1/sessions/${id}`);
     },
     migrate: (id: string): Promise<Migration> => this.request<Migration>('POST', `/api/v1/sessions/${id}/migrate`),
+    fork: async (id: string, count = 1): Promise<Fork> => {
+      const f = await this.request<Omit<Fork, 'sessions'> & { sessions: SessionData[] }>('POST', `/api/v1/sessions/${id}/fork`, { count });
+      return { ...f, sessions: f.sessions.map((s) => new Session(this, s)) };
+    },
   };
 
   usage(): Promise<Usage> {
@@ -116,12 +139,14 @@ export class Baton {
   }
 
   /** @internal */
-  async request<T = unknown>(method: string, path: string): Promise<T> {
-    const res = await fetch(this.baseUrl + path, { method, headers: { Authorization: `Bearer ${this.apiKey}` } });
+  async request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.apiKey}` };
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    const res = await fetch(this.baseUrl + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     if (res.status === 204) return undefined as T;
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new BatonError((body as { error?: string }).error ?? res.statusText, res.status);
-    return body as T;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new BatonError((data as { error?: string }).error ?? res.statusText, res.status);
+    return data as T;
   }
 }
 

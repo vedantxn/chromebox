@@ -8,7 +8,7 @@ Cloud browsers for agents. Every session is a real Chrome in its own Firecracker
 2. Install:
 
 ```sh
-npm install https://batonvm.vercel.app/batonvm-0.1.0.tgz playwright-core
+npm install https://batonvm.vercel.app/batonvm-0.2.0.tgz playwright-core
 export BATON_API_KEY=bk_...
 ```
 

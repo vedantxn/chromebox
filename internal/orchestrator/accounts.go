@@ -79,6 +79,7 @@ func (o *Orchestrator) accountRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/users/{uid}/sessions/{sid}", o.getSession)
 	mux.HandleFunc("DELETE /v1/users/{uid}/sessions/{sid}", o.endSession)
 	mux.HandleFunc("POST /v1/users/{uid}/sessions/{sid}/migrate", o.migrateSession)
+	mux.HandleFunc("POST /v1/users/{uid}/sessions/{sid}/fork", o.forkSession)
 	mux.HandleFunc("POST /v1/users/{uid}/sessions/{sid}/token", o.sessionToken)
 	mux.HandleFunc("GET /v1/users/{uid}/usage", o.usage)
 }
@@ -222,15 +223,63 @@ func (o *Orchestrator) createSession(w http.ResponseWriter, r *http.Request) {
 // CreateFor is Create for an account: the limits are checked, and the session
 // row written, under the same lock that places the VM.
 func (o *Orchestrator) CreateFor(ctx context.Context, uid, base string, ttl time.Duration) (api.VM, error) {
-	vm, _, err := o.Create(ctx, base, ttl, func(id string) error {
-		// Runs while Create holds the placement lock: check and record in one step.
+	vm, _, err := o.Create(ctx, base, ttl, o.reserveFor(uid))
+	return vm, err
+}
+
+// reserveFor runs while Create holds the placement lock: check the account's
+// limits and record the session in one step.
+func (o *Orchestrator) reserveFor(uid string) func(id string) error {
+	return func(id string) error {
 		if err := o.checkLimits(uid); err != nil {
 			return err
 		}
 		_, err := o.store.db.Exec(`INSERT INTO sessions (id, user_id, created_at) VALUES (?,?,?)`, id, uid, now())
 		return err
-	})
-	return vm, err
+	}
+}
+
+// forkSession copies one of the account's running sessions into count new
+// ones (M6). Each copy counts against the limits like any session. The limits
+// are checked once before the parent is paused, so a fork that would be
+// refused never pauses anyone, and again for each copy as it is placed.
+func (o *Orchestrator) forkSession(w http.ResponseWriter, r *http.Request) {
+	uid := r.PathValue("uid")
+	if _, err := o.owned(uid, r.PathValue("sid")); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	var req struct{ Count int }
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.Count < 1 || req.Count > 16 {
+		http.Error(w, "count must be 1-16", http.StatusBadRequest)
+		return
+	}
+	o.place.Lock()
+	err := o.checkLimits(uid)
+	o.place.Unlock()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusTooManyRequests)
+		return
+	}
+	res, err := o.Fork(r.Context(), r.PathValue("sid"), req.Count, sessionLifetime, o.reserveFor(uid))
+	if err != nil {
+		code := http.StatusConflict
+		if strings.Contains(err.Error(), "limit:") {
+			code = http.StatusTooManyRequests
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	out := map[string]any{"parent": res.Parent, "paused_ms": res.PausedMs, "total_ms": res.TotalMs, "errors": res.Errors}
+	var sessions []Session
+	for _, vm := range res.Copies {
+		s := o.sessionView(vm.ID, uid)
+		s.ConnectURL = o.connectURL(vm, "cdp", sessionLifetime)
+		sessions = append(sessions, s)
+	}
+	out["sessions"] = sessions
+	writeJSON(w, http.StatusCreated, out)
 }
 
 func (o *Orchestrator) connectURL(vm api.VM, kind string, ttl time.Duration) string {
