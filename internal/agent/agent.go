@@ -276,7 +276,8 @@ func (a *Agent) migrateOut(w http.ResponseWriter, r *http.Request) {
 //   - reserve the page server's port on the address the target will reach;
 //   - allocate the memory file in RAM, so that during the pause Firecracker
 //     only copies into it (allocating and zeroing those pages took about half
-//     of the 334 ms snapshot write in C1).
+//     of the 334 ms snapshot write in C1);
+//   - map all of the VM's memory (vm.Prefault).
 func (a *Agent) preparePostCopy(p vm.Paths, targetAgent string) (*pageserver.Server, error) {
 	local, targetIP, err := routeTo(targetAgent)
 	if err != nil {
@@ -296,6 +297,12 @@ func (a *Agent) preparePostCopy(p vm.Paths, targetAgent string) (*pageserver.Ser
 	if err != nil {
 		_ = ps.Close()
 		return nil, err
+	}
+	// Map all of the VM's memory before the pause (see vm.Prefault): a VM
+	// fresh from a base has touched only a third of it, and the snapshot
+	// would fault in the rest while paused.
+	if err := vm.Prefault(p, int64(img.MemMiB)<<20); err != nil {
+		log.Printf("migrate %s: prefault: %v", filepath.Base(p.Dir), err)
 	}
 	return ps, nil
 }
@@ -503,7 +510,7 @@ func listBases() []api.BaseInfo {
 	for _, e := range entries {
 		if m, err := base.Read(e.Name()); err == nil {
 			out = append(out, api.BaseInfo{Name: m.Name, DiskSHA256: m.DiskSHA256, MemMiB: m.MemMiB,
-				HeldMiB: base.HeldMiB(m.Name, m), ForkOf: m.ForkOf, BuiltAt: m.BuiltAt})
+				HeldMiB: base.HeldMiB(m.Name, m), ForkOf: m.ForkOf, DiskBase: m.DiskBase, BuiltAt: m.BuiltAt})
 		}
 	}
 	return out
@@ -638,9 +645,13 @@ func (a *Agent) forkImage(w http.ResponseWriter, r *http.Request) {
 		log.Printf("fork %s: heartbeat: %v", req.Image, err)
 	}
 	m, _ := base.Read(req.Image)
-	paused, _ := sw.Steps()
+	steps, _ := sw.Steps()
+	var paused time.Duration // from the pause request to the parent running again
+	for _, k := range []string{"paused", "snapshot written", "disk cloned", "resumed"} {
+		paused += steps[k]
+	}
 	writeJSON(w, http.StatusOK, api.ForkImageResponse{Laps: sw.Record(),
-		PausedMs: float64(paused["parent paused, snapshot, resumed"].Microseconds()) / 1000,
+		PausedMs: float64(paused.Microseconds()) / 1000,
 		HeldMiB:  base.HeldMiB(req.Image, m), ZeroMiB: int(freed >> 20), DiskBase: m.DiskBase})
 }
 

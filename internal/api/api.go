@@ -30,8 +30,9 @@ type BaseInfo struct {
 	MemMiB     int    `json:"mem_mib"`  // memory of a VM made from it
 	HeldMiB    int    `json:"held_mib"` // RAM the base itself holds on this node
 	// Fork images (M6): made from a running VM, kept while VMs use them.
-	ForkOf  string    `json:"fork_of,omitempty"`
-	BuiltAt time.Time `json:"built_at"`
+	ForkOf   string    `json:"fork_of,omitempty"`
+	DiskBase string    `json:"disk_base,omitempty"` // the regular base a fork image's disk descends from
+	BuiltAt  time.Time `json:"built_at"`
 }
 
 // ForkImageRequest asks an agent to turn a running VM into a fork image.

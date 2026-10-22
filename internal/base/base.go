@@ -110,16 +110,26 @@ func Fork(ctx context.Context, c *firecracker.Client, p vm.Paths, name string, s
 		return 0, err
 	}
 	sw.Lap("image prepared")
+	// Map all of the parent's memory while it still runs, so the snapshot
+	// doesn't fault it in during the pause. Only an optimization: on failure
+	// the pause is just longer.
+	if err := vm.Prefault(p, int64(img.MemMiB)<<20); err != nil {
+		fmt.Fprintf(os.Stderr, "fork %s: prefault: %v\n", name, err)
+	}
+	sw.Lap("parent memory mapped")
 
 	if err := c.PauseVM(ctx); err != nil {
 		return 0, err
 	}
+	sw.Lap("paused")
 	nosync := false
 	err = c.CreateSnapshot(ctx, firecracker.SnapshotCreate{SnapshotPath: ShmState(name), MemFilePath: ShmMem(name),
 		SnapshotType: "Full", SyncSnapshotFiles: &nosync})
+	sw.Lap("snapshot written")
 	if err == nil {
 		err = vm.CloneFile(p.Rootfs(), Disk(name)) // while paused: the disk matches the memory
 	}
+	sw.Lap("disk cloned")
 	if rerr := c.ResumeVM(context.Background()); err == nil {
 		err = rerr
 	}
@@ -127,7 +137,7 @@ func Fork(ctx context.Context, c *firecracker.Client, p vm.Paths, name string, s
 		_ = Delete(name)
 		return 0, err
 	}
-	sw.Lap("parent paused, snapshot, resumed")
+	sw.Lap("resumed")
 
 	freed, err := vm.PunchZeros(ShmMem(name))
 	if err != nil {

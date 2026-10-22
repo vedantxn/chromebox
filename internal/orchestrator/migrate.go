@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/api"
+	"github.com/vedantxn/chromebox/internal/base"
 )
 
 // MigrationResult reports one migration.
@@ -26,7 +27,10 @@ type MigrationResult struct {
 	PostCopy  bool    `json:"post_copy"`
 	StreamMs  float64 `json:"stream_ms,omitempty"`
 	StreamMiB float64 `json:"stream_mib,omitempty"`
-	Error     string  `json:"error,omitempty"`
+	// A fork's copy moving to a node without its image: the time to pull it
+	// there first, while the VM still ran.
+	ImagePullMs float64 `json:"image_pull_ms,omitempty"`
+	Error       string  `json:"error,omitempty"`
 }
 
 // Migrate moves VM id to target ("" lets the scheduler choose). Two phases:
@@ -53,7 +57,9 @@ func (o *Orchestrator) Migrate(ctx context.Context, id, target string) (Migratio
 			o.place.Unlock()
 			return res, err
 		}
-		if target, err = Place(views, Request{MemMiB: vm.MemMiB, Base: vm.Base}, o.cfg.Strategy, vm.Node); err != nil {
+		// A fork's copy can go to any node holding the regular base its disk
+		// descends from; the fork image itself is pulled there below.
+		if target, err = Place(views, Request{MemMiB: vm.MemMiB, Base: o.diskBase(vm.Base)}, o.cfg.Strategy, vm.Node); err != nil {
 			o.place.Unlock()
 			return res, err
 		}
@@ -74,6 +80,19 @@ func (o *Orchestrator) Migrate(ctx context.Context, id, target string) (Migratio
 	dst, err := o.agentFor(target)
 	if err != nil {
 		return res, err
+	}
+	// The target needs the VM's base (for the disk it rebuilds and the
+	// device state it expects). Regular bases are on every node; a fork image
+	// is pulled from the node the copy runs on, while the VM still runs: the
+	// pull is not part of the pause.
+	if base.IsFork(vm.Base) && !o.holds(target, vm.Base) {
+		t := time.Now()
+		pr, err := dst.PullImage(ctx, vm.Base, src.URL)
+		if err != nil {
+			return res, fmt.Errorf("bring fork image %s to %s: %w", vm.Base, target, err)
+		}
+		res.ImagePullMs = float64(time.Since(t).Microseconds()) / 1000
+		log.Printf("migrate %s: pulled %s to %s in %.0f ms (%.1f MiB disk, %.0f MiB memory)", id, vm.Base, target, res.ImagePullMs, pr.DiskMiB, pr.MemMiB)
 	}
 	if err := o.store.SetState(id, StateMigrating); err != nil {
 		return res, err

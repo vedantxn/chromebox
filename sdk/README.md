@@ -8,7 +8,7 @@ Cloud browsers for agents. Every session is a real Chrome in its own Firecracker
 2. Install:
 
 ```sh
-npm install https://batonvm.vercel.app/batonvm-0.2.0.tgz playwright-core
+npm install batonvm playwright-core
 export BATON_API_KEY=bk_...
 ```
 
@@ -44,6 +44,7 @@ Puppeteer works too: `puppeteer.connect({ browserWSEndpoint: session.connectUrl 
 | `baton.sessions.create()` | start a browser → `Session` with `connectUrl` |
 | `baton.sessions.list()` / `get(id)` / `delete(id)` | |
 | `session.migrate()` | move it to another machine → `{ from, to, pausedMs, unreachableMs }` |
+| `session.fork(n)` | copy the running browser into `n` new sessions: same pages, cookies and storage, each with its own `connectUrl` → `{ pausedMs, sessions, errors }` |
 | `session.liveUrl()` | short-lived URL for watching it |
 | `session.close()` | end it |
 | `baton.usage()` | running sessions and minutes used today |

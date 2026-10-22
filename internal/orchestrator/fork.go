@@ -12,20 +12,22 @@ import (
 
 	"github.com/vedantxn/chromebox/internal/api"
 	"github.com/vedantxn/chromebox/internal/base"
+	"github.com/vedantxn/chromebox/internal/timing"
 )
 
 // ForkResult is what a fork did: the parent's pause, the image, and the copies.
 type ForkResult struct {
-	Parent   string   `json:"parent"`
-	Image    string   `json:"image"`
-	PausedMs float64  `json:"paused_ms"` // the parent, while its snapshot was taken
-	ImageMiB int      `json:"image_mib"` // RAM the image holds (zero pages punched out)
-	ZeroMiB  int      `json:"zero_mib"`
-	ImageMs  float64  `json:"image_ms"` // request -> image ready
-	TotalMs  float64  `json:"total_ms"` // request -> every copy answering
-	Copies   []api.VM `json:"copies"`
-	Spills   []Spill  `json:"spills,omitempty"` // other nodes the image was pulled to
-	Errors   []string `json:"errors,omitempty"`
+	Parent    string        `json:"parent"`
+	Image     string        `json:"image"`
+	PausedMs  float64       `json:"paused_ms"` // the parent, while its snapshot was taken
+	ImageLaps timing.Record `json:"image_laps"`
+	ImageMiB  int           `json:"image_mib"` // RAM the image holds (zero pages punched out)
+	ZeroMiB   int           `json:"zero_mib"`
+	ImageMs   float64       `json:"image_ms"` // request -> image ready
+	TotalMs   float64       `json:"total_ms"` // request -> every copy answering
+	Copies    []api.VM      `json:"copies"`
+	Spills    []Spill       `json:"spills,omitempty"` // other nodes the image was pulled to
+	Errors    []string      `json:"errors,omitempty"`
 }
 
 // Fork copies running VM id n times (M6). The parent's node turns it into a
@@ -49,11 +51,23 @@ func (o *Orchestrator) Fork(ctx context.Context, id string, n int, ttl time.Dura
 	if err != nil {
 		return res, err
 	}
+	// Don't pause anyone for a fork that can't start a single copy. A copy
+	// fits on the parent's node if there is room for it and for the image
+	// (about 60% of a VM's memory once zero pages are punched out: 615 of 1024
+	// MiB measured), or on another node holding the parent's disk base.
+	if views, err := o.views(); err == nil {
+		imageEst := parent.MemMiB * 3 / 5
+		_, here := Place(views, Request{MemMiB: parent.MemMiB + imageEst}, o.cfg.Strategy, others(views, parent.Node)...)
+		_, there := Place(views, Request{MemMiB: parent.MemMiB, Base: o.diskBase(parent.Base)}, o.cfg.Strategy, parent.Node)
+		if here != nil && there != nil {
+			return res, fmt.Errorf("no room for a copy, nothing paused: %v", here)
+		}
+	}
 	fr, err := ag.ForkImage(ctx, id, res.Image)
 	if err != nil {
 		return res, err
 	}
-	res.PausedMs, res.ImageMiB, res.ZeroMiB = fr.PausedMs, fr.HeldMiB, fr.ZeroMiB
+	res.PausedMs, res.ImageMiB, res.ZeroMiB, res.ImageLaps = fr.PausedMs, fr.HeldMiB, fr.ZeroMiB, fr.Laps
 	res.ImageMs = float64(time.Since(start).Microseconds()) / 1000
 
 	// Copies go to the parent's node while it has room: there they share the
@@ -97,9 +111,31 @@ func (o *Orchestrator) Fork(ctx context.Context, id string, n int, ttl time.Dura
 	}
 	res.TotalMs = float64(time.Since(start).Microseconds()) / 1000
 	if len(res.Copies) == 0 {
+		// Nothing uses the image: free it now rather than after the
+		// collector's grace, or failed forks pile images up on the node.
+		for _, node := range have {
+			if a, err := o.agentFor(node); err == nil {
+				_ = a.DeleteBase(context.Background(), res.Image)
+			}
+		}
 		return res, fmt.Errorf("no copy started: %s", strings.Join(res.Errors, "; "))
 	}
 	return res, nil
+}
+
+// diskBase is the regular base a VM of base name descends from, as the nodes
+// report it (a fork image's copies descend from the parent's base).
+func (o *Orchestrator) diskBase(name string) string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	for _, s := range o.seen {
+		for _, b := range s.Status.Bases {
+			if b.Name == name && b.DiskBase != "" {
+				return b.DiskBase
+			}
+		}
+	}
+	return name
 }
 
 // Spill is one node a fork image was pulled to, and what that cost.
@@ -190,4 +226,27 @@ func (o *Orchestrator) collectForks(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// others lists every node but keep, for excluding them from a placement.
+func others(views []NodeView, keep string) []string {
+	var out []string
+	for _, v := range views {
+		if v.Name != keep {
+			out = append(out, v.Name)
+		}
+	}
+	return out
+}
+
+// holds says whether node reported base name in its last heartbeat.
+func (o *Orchestrator) holds(node, name string) bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	for _, b := range o.seen[node].Status.Bases {
+		if b.Name == name {
+			return true
+		}
+	}
+	return false
 }
