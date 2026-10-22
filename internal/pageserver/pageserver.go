@@ -32,6 +32,10 @@ const (
 	chunk    = 2 << 20 // the stream scans memory in pieces of this size
 	pageSize = 4096
 	zeroRun  = 1 << 31 // set in a stream record's length: the run is all zeros, no bytes follow
+
+	// silentSource: how long the target waits on the source before giving up
+	// on the migration.
+	silentSource = 3 * time.Second
 )
 
 // Server serves one migration's memory.
@@ -244,6 +248,9 @@ func (c *Client) Fetch(off uint64, buf []byte) error {
 	var req [12]byte
 	binary.LittleEndian.PutUint64(req[0:], off)
 	binary.LittleEndian.PutUint32(req[8:], uint32(len(buf)))
+	// A source that went silent must not freeze the guest forever: a fault
+	// normally takes well under a millisecond.
+	_ = c.fault.SetDeadline(time.Now().Add(silentSource))
 	if _, err := c.fault.Write(req[:]); err != nil {
 		return err
 	}
@@ -258,6 +265,7 @@ func (c *Client) Stream(install func(off uint64, data []byte) error, zero func(o
 	var hdr [12]byte
 	buf := make([]byte, chunk)
 	for {
+		_ = c.stream.SetReadDeadline(time.Now().Add(silentSource))
 		if _, err := io.ReadFull(r, hdr[:]); err != nil {
 			return err
 		}

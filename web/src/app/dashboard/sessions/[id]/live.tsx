@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 type Sess = { id: string; status: string; node?: string; expiresAt?: string; migrations: number; endReason?: string };
-type Move = { at: string; from?: string; to?: string; pausedMs?: number; unreachableMs?: number; error?: string };
+type Move = { at: string; from?: string; to?: string; pausedMs?: number; unreachableMs?: number; streamMs?: number; streamMiB?: number; error?: string };
 
 // Live view: a CDP connection from this page, through the gateway, to the
 // browser. It attaches to the active tab and asks Chrome to stream it
@@ -128,12 +128,13 @@ export default function Live({ id }: { id: string }) {
         <div>
           <p className="text-zinc-500">Migrations</p>
           <ul className="mt-1 space-y-2">
-            {moves.length === 0 && <li className="text-zinc-500">None yet. Press “Migrate now” and watch the frames pause and come back.</li>}
+            {moves.length === 0 && <li className="text-zinc-500">None yet. Press “Migrate now”: the browser resumes on the other machine before its memory arrives, and the memory follows while it runs.</li>}
             {moves.map((m, i) => (
               <li key={i} className="rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
                 <span className="text-zinc-500">{m.at}</span>{' '}
                 {m.error ? <span className="text-red-600">{m.error}</span>
-                  : <>{m.from} → {m.to}<br /><span className="text-zinc-500">paused {m.pausedMs?.toFixed(0)} ms · unreachable {m.unreachableMs?.toFixed(0)} ms</span></>}
+                  : <>{m.from} → {m.to}<br /><span className="text-zinc-500">paused {m.pausedMs?.toFixed(0)} ms · unreachable {m.unreachableMs?.toFixed(0)} ms
+                    {m.streamMs ? <><br />then {m.streamMiB?.toFixed(0)} MiB of memory followed in {m.streamMs.toFixed(0)} ms while it ran</> : null}</span></>}
               </li>
             ))}
           </ul>

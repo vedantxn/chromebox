@@ -133,3 +133,50 @@ func (o *Orchestrator) allowed(n int) bool {
 	}
 	return false
 }
+
+// vanishGrace is how long a running VM may be missing from its node's
+// heartbeats before it is declared lost (a heartbeat taken just before a
+// create finished may not list it yet).
+const vanishGrace = 3 * time.Second
+
+// vanished handles VMs that the database places on a node which is up but no
+// longer runs them. Since M5 this happens by design: after a post-copy
+// migration, if the target can never get the rest of its memory (the source
+// died mid-stream), its page-fault handler kills the VM instead of leaving it
+// frozen on a page nobody will serve. A crashed Firecracker looks the same.
+// Either way it is a loss like a node's: route removed, clients told at once.
+func (o *Orchestrator) vanished(st api.Status) {
+	reported := make(map[string]bool, len(st.VMs))
+	for _, v := range st.VMs {
+		reported[v.ID] = true
+	}
+	vms, err := o.store.ListVMs()
+	if err != nil {
+		return
+	}
+	o.goneMu.Lock()
+	defer o.goneMu.Unlock()
+	for _, v := range vms {
+		if v.Node != st.Node {
+			continue
+		}
+		if v.State != StateRunning || reported[v.ID] {
+			delete(o.gone, v.ID)
+			continue
+		}
+		first, ok := o.gone[v.ID]
+		if !ok {
+			o.gone[v.ID] = time.Now()
+			continue
+		}
+		if time.Since(first) < vanishGrace {
+			continue
+		}
+		delete(o.gone, v.ID)
+		_ = o.store.SetState(v.ID, StateLost)
+		o.store.endSessionRecord(v.ID, "browser stopped")
+		o.delRoute(context.Background(), v.NetIndex)
+		n := o.closeConns(v.NetIndex)
+		log.Printf("%s no longer runs on %s: lost, %d client connection(s) closed", v.ID, v.Node, n)
+	}
+}

@@ -59,6 +59,9 @@ type Orchestrator struct {
 
 	pending map[string]int // memory held on a node for migrations in flight (guarded by place)
 
+	goneMu sync.Mutex
+	gone   map[string]time.Time // running VMs missing from their node's heartbeats, since when
+
 	started time.Time
 }
 
@@ -76,7 +79,7 @@ func New(cfg Config) (*Orchestrator, error) {
 	if err := st.accountSchema(); err != nil {
 		return nil, err
 	}
-	o := &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}, started: time.Now()}
+	o := &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}, gone: map[string]time.Time{}, started: time.Now()}
 	return o, nil
 }
 
@@ -141,6 +144,7 @@ func (o *Orchestrator) heartbeat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("upsert node %s: %v", st.Node, err)
 	}
 	o.fence(st)
+	o.vanished(st)
 	w.WriteHeader(http.StatusNoContent)
 }
 

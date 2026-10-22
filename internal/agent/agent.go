@@ -255,6 +255,13 @@ func (a *Agent) migrateOut(w http.ResponseWriter, r *http.Request) {
 		a.outMu.Lock()
 		a.outgoing[id] = &outgoing{ps: ps, mem: mem, resumed: time.Now()}
 		a.outMu.Unlock()
+		if os.Getenv("CHROMEBOX_FAULT") == "source-dies" { // fault injection for break-it tests:
+			go func() { // the source vanishes mid-stream, page server and all
+				time.Sleep(200 * time.Millisecond)
+				log.Printf("fault injection: source dies during the stream of %s", id)
+				os.Exit(3)
+			}()
+		}
 	} else {
 		_ = os.RemoveAll(p.MemDir())
 	}

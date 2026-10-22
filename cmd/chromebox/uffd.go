@@ -32,7 +32,7 @@ const installChunk = 2 << 20
 // is done, and exits, writing what it did to uffd.json. delay holds the
 // background back, to watch faults alone; fault_kib is how much one fault
 // fetches.
-func uffdCmd(p vm.Paths, args []string) error {
+func uffdCmd(p vm.Paths, args []string) (err error) {
 	var file, source, token string
 	var delay time.Duration
 	// A fault fetches 64 KiB around the page: Chrome waking on a new node
@@ -88,6 +88,16 @@ func uffdCmd(p vm.Paths, args []string) error {
 	}
 	start := time.Now()
 	fmt.Printf("firecracker connected: %d region(s) %+v\n", len(regions), regions)
+	// From here the VM runs on memory only this process can complete. If it
+	// can't (the source is gone), a guest left waiting on a missing page would
+	// hang forever with its clients still connected; kill it instead, so the
+	// orchestrator sees it vanish and marks it lost (M5, C3).
+	defer func() {
+		if err != nil {
+			fmt.Printf("cannot complete the memory, killing the VM: %v\n", err)
+			_ = vm.Kill(p)
+		}
+	}()
 	if err := <-dialed; err != nil {
 		return fmt.Errorf("connect to the source's page server: %w", err)
 	}
@@ -160,9 +170,10 @@ func uffdCmd(p vm.Paths, args []string) error {
 		return err
 	}
 	_ = h.Close()
+	// The VM holds all its memory now; nothing below may fail it.
 	if pages != nil {
 		if err := pages.Ack(); err != nil {
-			return err
+			fmt.Printf("could not tell the source we are done (it will time out): %v\n", err)
 		}
 		pages.Close()
 	}
@@ -170,5 +181,6 @@ func uffdCmd(p vm.Paths, args []string) error {
 	s.CompleteMs = float64(time.Since(start).Microseconds()) / 1000
 	b, _ := json.Marshal(s)
 	fmt.Printf("complete: %s\n", b)
-	return os.WriteFile(filepath.Join(p.Dir, "uffd.json"), b, 0o644)
+	_ = os.WriteFile(filepath.Join(p.Dir, "uffd.json"), b, 0o644)
+	return nil
 }
