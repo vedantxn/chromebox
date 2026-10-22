@@ -32,6 +32,7 @@ func (o *Orchestrator) reconcileLoop(ctx context.Context) {
 		}
 		o.markLost(ctx)
 		o.expire(ctx)
+		o.collectForks(ctx)
 	}
 }
 

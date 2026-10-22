@@ -27,7 +27,24 @@ type VMInfo struct {
 type BaseInfo struct {
 	Name       string `json:"name"`
 	DiskSHA256 string `json:"disk_sha256"`
-	MemMiB     int    `json:"mem_mib"`
+	MemMiB     int    `json:"mem_mib"`  // memory of a VM made from it
+	HeldMiB    int    `json:"held_mib"` // RAM the base itself holds on this node
+	// Fork images (M6): made from a running VM, kept while VMs use them.
+	ForkOf  string    `json:"fork_of,omitempty"`
+	BuiltAt time.Time `json:"built_at"`
+}
+
+// ForkImageRequest asks an agent to turn a running VM into a fork image.
+type ForkImageRequest struct {
+	Image string `json:"image"`
+}
+
+// ForkImageResponse: how long the parent was paused, and the image's size.
+type ForkImageResponse struct {
+	Laps     timing.Record `json:"laps"`
+	PausedMs float64       `json:"paused_ms"`
+	HeldMiB  int           `json:"held_mib"` // RAM the image holds, zero pages punched out
+	ZeroMiB  int           `json:"zero_mib"` // zero pages that were punched out
 }
 
 // Status is what an agent reports about its node: sent with every heartbeat and

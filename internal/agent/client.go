@@ -101,6 +101,19 @@ func (c *Client) Accept(ctx context.Context, id string, req api.AcceptRequest) (
 
 // Commit retires the source copy. After a post-copy migration it returns only
 // once the target holds every page.
+// ForkImage makes a fork image from running VM id; the agent has already
+// reported it in a heartbeat when this returns.
+func (c *Client) ForkImage(ctx context.Context, id, image string) (api.ForkImageResponse, error) {
+	var out api.ForkImageResponse
+	err := c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/fork-image", api.ForkImageRequest{Image: image}, &out)
+	return out, err
+}
+
+// DeleteBase removes a fork image from the node.
+func (c *Client) DeleteBase(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/bases/"+name, nil, nil)
+}
+
 func (c *Client) Commit(ctx context.Context, id string) (api.CommitResponse, error) {
 	var out api.CommitResponse
 	err := c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/commit", nil, &out)

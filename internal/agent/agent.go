@@ -93,6 +93,8 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/incoming", a.incoming)
 	mux.HandleFunc("POST /v1/vms/{id}/accept", a.accept)
 	mux.HandleFunc("POST /v1/vms/{id}/state", a.putState)
+	mux.HandleFunc("POST /v1/vms/{id}/fork-image", a.forkImage)
+	mux.HandleFunc("DELETE /v1/bases/{name}", a.deleteBase)
 	mux.HandleFunc("POST /v1/vms/{id}/delta", a.putDelta)
 	return a.auth(mux)
 }
@@ -288,7 +290,7 @@ func (a *Agent) preparePostCopy(p vm.Paths, targetAgent string) (*pageserver.Ser
 		err = os.MkdirAll(p.MemDir(), 0o755)
 	}
 	if err == nil {
-		err = preallocate(p.Mem(), int64(img.MemMiB)<<20)
+		err = vm.Preallocate(p.Mem(), int64(img.MemMiB)<<20)
 	}
 	if err != nil {
 		_ = ps.Close()
@@ -433,7 +435,7 @@ func (a *Agent) Status() api.Status {
 	// bases would make a node look emptier right until its first create.
 	reserve := hostReserveMiB
 	for _, b := range st.Bases {
-		reserve += b.MemMiB
+		reserve += b.HeldMiB
 	}
 	st.CapMemMiB = memTotalMiB() - reserve
 	a.outMu.Lock()
@@ -499,24 +501,19 @@ func listBases() []api.BaseInfo {
 	entries, _ := os.ReadDir(base.Dir)
 	for _, e := range entries {
 		if m, err := base.Read(e.Name()); err == nil {
-			out = append(out, api.BaseInfo{Name: m.Name, DiskSHA256: m.DiskSHA256, MemMiB: m.MemMiB})
+			out = append(out, api.BaseInfo{Name: m.Name, DiskSHA256: m.DiskSHA256, MemMiB: m.MemMiB,
+				HeldMiB: base.HeldMiB(m.Name, m), ForkOf: m.ForkOf, BuiltAt: m.BuiltAt})
 		}
 	}
 	return out
 }
 
 func (a *Agent) heartbeats(ctx context.Context) {
-	client := &http.Client{Timeout: 2 * time.Second}
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
-		body, _ := json.Marshal(a.Status())
-		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.Orchestrator+"/v1/heartbeat", bytes.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+a.cfg.Token)
-		if resp, err := client.Do(req); err != nil {
+		if err := a.heartbeat(ctx); err != nil {
 			log.Printf("heartbeat: %v", err)
-		} else {
-			resp.Body.Close()
 		}
 		select {
 		case <-ctx.Done():
@@ -597,4 +594,59 @@ func memCost(p vm.Paths) (pss, private float64) {
 func fmtLaps(r timing.Record) string {
 	b, _ := json.Marshal(r)
 	return string(b)
+}
+
+var heartbeatClient = &http.Client{Timeout: 2 * time.Second}
+
+// heartbeat sends this node's status to the orchestrator once.
+func (a *Agent) heartbeat(ctx context.Context) error {
+	if a.cfg.Orchestrator == "" {
+		return nil
+	}
+	body, _ := json.Marshal(a.Status())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.Orchestrator+"/v1/heartbeat", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+a.cfg.Token)
+	resp, err := heartbeatClient.Do(req)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// forkImage turns a running VM into a fork image (M6), then reports it at
+// once, so the orchestrator can place copies on this node without waiting for
+// the next heartbeat.
+func (a *Agent) forkImage(w http.ResponseWriter, r *http.Request) {
+	var req api.ForkImageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !base.IsFork(req.Image) {
+		http.Error(w, "need image, named fork-...", http.StatusBadRequest)
+		return
+	}
+	p := vm.PathsFor(r.PathValue("id"))
+	if !alive(p) {
+		http.Error(w, "no running VM "+r.PathValue("id"), http.StatusNotFound)
+		return
+	}
+	sw := timing.Start()
+	freed, err := base.Fork(r.Context(), firecracker.New(p.Socket()), p, req.Image, sw)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := a.heartbeat(r.Context()); err != nil {
+		log.Printf("fork %s: heartbeat: %v", req.Image, err)
+	}
+	m, _ := base.Read(req.Image)
+	paused, _ := sw.Steps()
+	writeJSON(w, http.StatusOK, api.ForkImageResponse{Laps: sw.Record(),
+		PausedMs: float64(paused["parent paused, snapshot, resumed"].Microseconds()) / 1000,
+		HeldMiB:  base.HeldMiB(req.Image, m), ZeroMiB: int(freed >> 20)})
+}
+
+func (a *Agent) deleteBase(w http.ResponseWriter, r *http.Request) {
+	if err := base.Delete(r.PathValue("name")); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

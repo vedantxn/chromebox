@@ -16,6 +16,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/firecracker"
@@ -42,6 +44,88 @@ type Manifest struct {
 	MemMiB     int       `json:"mem_mib"`
 	DiskSHA256 string    `json:"disk_sha256"`
 	BuiltAt    time.Time `json:"built_at"`
+	// ForkOf names the VM a fork image was taken from (M6). A fork image is a
+	// base made on the fly from a running browser, kept only while VMs use it.
+	ForkOf string `json:"fork_of,omitempty"`
+}
+
+// IsFork says whether a base name is a fork image.
+func IsFork(name string) bool { return strings.HasPrefix(name, "fork-") }
+
+// HeldMiB is how much RAM the base holds now: its memory file in tmpfs, by
+// the pages really allocated (holes cost nothing), or, if not loaded yet, its
+// full size, since it will be loaded as soon as a VM needs it.
+func HeldMiB(name string, m Manifest) int {
+	var st syscall.Stat_t
+	if err := syscall.Stat(ShmMem(name), &st); err != nil {
+		return m.MemMiB
+	}
+	return int(st.Blocks * 512 >> 20)
+}
+
+// Delete removes a fork image. VMs made from it keep running: they map its
+// memory, so the pages live until the last of them exits.
+func Delete(name string) error {
+	if !IsFork(name) {
+		return fmt.Errorf("%s is not a fork image", name)
+	}
+	_ = os.RemoveAll(shm(name))
+	return os.RemoveAll(dir(name))
+}
+
+// Fork turns running VM p into fork image name, and returns how much of its
+// memory was zero pages (punched out of the image after the VM resumed).
+//
+// The VM is paused only while Firecracker writes its state and memory (into a
+// file allocated beforehand, as in a migration) and its disk is cloned: about
+// as long as a migration's pause. Then it runs on, unaware. New VMs are made
+// from the image exactly as from a base (Clone): they map its memory
+// copy-on-write and are told their own address over vsock.
+func Fork(ctx context.Context, c *firecracker.Client, p vm.Paths, name string, sw *timing.Stopwatch) (int64, error) {
+	if !IsFork(name) {
+		return 0, fmt.Errorf("fork image names start with fork-: %q", name)
+	}
+	imgName, img, err := vm.ImageOf(p)
+	if err != nil {
+		return 0, err
+	}
+	for _, d := range []string{dir(name), shm(name)} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return 0, err
+		}
+	}
+	if err := vm.Preallocate(ShmMem(name), int64(img.MemMiB)<<20); err != nil {
+		return 0, err
+	}
+	sw.Lap("image prepared")
+
+	if err := c.PauseVM(ctx); err != nil {
+		return 0, err
+	}
+	nosync := false
+	err = c.CreateSnapshot(ctx, firecracker.SnapshotCreate{SnapshotPath: ShmState(name), MemFilePath: ShmMem(name),
+		SnapshotType: "Full", SyncSnapshotFiles: &nosync})
+	if err == nil {
+		err = vm.CloneFile(p.Rootfs(), Disk(name)) // while paused: the disk matches the memory
+	}
+	if rerr := c.ResumeVM(context.Background()); err == nil {
+		err = rerr
+	}
+	if err != nil {
+		_ = Delete(name)
+		return 0, err
+	}
+	sw.Lap("parent paused, snapshot, resumed")
+
+	freed, err := vm.PunchZeros(ShmMem(name))
+	if err != nil {
+		_ = Delete(name)
+		return 0, err
+	}
+	sw.Lap("zero pages punched out")
+	b, _ := json.MarshalIndent(Manifest{Name: name, Image: imgName, VCPUs: img.VCPUs, MemMiB: img.MemMiB,
+		BuiltAt: time.Now().UTC(), ForkOf: filepath.Base(p.Dir)}, "", "  ")
+	return freed, os.WriteFile(manifest(name), append(b, '\n'), 0o644)
 }
 
 func dir(name string) string      { return filepath.Join(Dir, name) }
@@ -238,6 +322,16 @@ func Clone(ctx context.Context, p vm.Paths, name string, netIndex int, sw *timin
 		return err
 	}
 	sw.Lap("browser answering")
+	if IsFork(name) && os.Getenv("CHROMEBOX_FORK_KEEP_PAGES") == "" {
+		img, err := vm.LookupImage(m.Image)
+		if err != nil {
+			return err
+		}
+		if _, err := freshTabs(ctx, fmt.Sprintf("%s:%d", nn.GuestIP, img.CDPPort)); err != nil {
+			return fmt.Errorf("fresh tabs: %w", err)
+		}
+		sw.Lap("open tabs moved to fresh renderers")
+	}
 	return nil
 }
 

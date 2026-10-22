@@ -236,6 +236,20 @@ func ctlCmd(args []string) error {
 		}
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
+	case "fork":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: chromebox ctl fork <id> <count>")
+		}
+		n, err := strconv.Atoi(args[2])
+		if err != nil {
+			return err
+		}
+		var out any
+		if err := call("POST", "/v1/vms/"+args[1]+"/fork", map[string]int{"count": n}, &out); err != nil {
+			return err
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
 	case "cordon", "uncordon":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: chromebox ctl %s <node>", args[0])

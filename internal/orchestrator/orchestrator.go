@@ -108,6 +108,7 @@ func (o *Orchestrator) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/vms/{id}", o.deleteVM)
 	mux.HandleFunc("GET /v1/nodes", o.listNodes)
 	mux.HandleFunc("POST /v1/vms/{id}/migrate", o.migrateVM)
+	mux.HandleFunc("POST /v1/vms/{id}/fork", o.forkVM)
 	mux.HandleFunc("POST /v1/vms/{id}/token", o.issueToken)
 	o.accountRoutes(mux)
 	mux.HandleFunc("POST /v1/nodes/{name}/drain", o.drainNode)
