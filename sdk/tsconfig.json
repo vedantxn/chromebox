@@ -1,0 +1,2 @@
+{ "compilerOptions": { "target": "ES2022", "module": "ES2022", "moduleResolution": "Bundler", "declaration": true,
+  "outDir": "dist/esm", "strict": true, "lib": ["ES2022", "DOM"], "skipLibCheck": true }, "include": ["src"] }
