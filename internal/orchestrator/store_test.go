@@ -1,9 +1,11 @@
 package orchestrator
 
 import (
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func openTest(t *testing.T) *Store {
@@ -18,14 +20,14 @@ func openTest(t *testing.T) *Store {
 
 func TestIndexIsTheLowestFreeAndNeverShared(t *testing.T) {
 	s := openTest(t)
-	a, _ := s.InsertVM("a", "node-a", "chrome", 1024)
-	b, _ := s.InsertVM("b", "node-a", "chrome", 1024)
-	c, _ := s.InsertVM("c", "node-b", "chrome", 1024)
+	a, _ := s.InsertVM("a", "node-a", "chrome", 1024, time.Time{})
+	b, _ := s.InsertVM("b", "node-a", "chrome", 1024, time.Time{})
+	c, _ := s.InsertVM("c", "node-b", "chrome", 1024, time.Time{})
 	if a.NetIndex != 1 || b.NetIndex != 2 || c.NetIndex != 3 {
 		t.Fatalf("indexes %d %d %d", a.NetIndex, b.NetIndex, c.NetIndex)
 	}
 	s.DeleteVM("b") // frees 2
-	d, _ := s.InsertVM("d", "node-b", "chrome", 1024)
+	d, _ := s.InsertVM("d", "node-b", "chrome", 1024, time.Time{})
 	if d.NetIndex != 2 {
 		t.Fatalf("a freed index should be reused first: got %d", d.NetIndex)
 	}
@@ -39,7 +41,7 @@ func TestConcurrentInsertsGetDistinctIndexes(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			v, err := s.InsertVM(string(rune('a'+i%26))+string(rune('a'+i/26)), "n", "chrome", 1)
+			v, err := s.InsertVM(fmt.Sprintf("vm-%d", i), "n", "chrome", 1, time.Time{})
 			if err != nil {
 				t.Error(err)
 				return
@@ -54,9 +56,9 @@ func TestConcurrentInsertsGetDistinctIndexes(t *testing.T) {
 
 func TestUsedMemCountsEverythingButLostVMs(t *testing.T) {
 	s := openTest(t)
-	s.InsertVM("a", "node-a", "chrome", 1024)
-	s.InsertVM("b", "node-a", "chrome", 1024) // still "creating": it already takes its space
-	s.InsertVM("c", "node-b", "chrome", 1024)
+	s.InsertVM("a", "node-a", "chrome", 1024, time.Time{})
+	s.InsertVM("b", "node-a", "chrome", 1024, time.Time{}) // still "creating": it already takes its space
+	s.InsertVM("c", "node-b", "chrome", 1024, time.Time{})
 	s.SetState("c", StateLost)
 	used, _ := s.UsedMem()
 	if used["node-a"] != 2048 || used["node-b"] != 0 {

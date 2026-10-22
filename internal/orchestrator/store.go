@@ -54,6 +54,8 @@ func Open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
+	// Added in M4; ALTER fails harmlessly if the column already exists.
+	_, _ = db.Exec(`ALTER TABLE vms ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`)
 	return &Store{db: db}, nil
 }
 
@@ -64,7 +66,7 @@ func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 // InsertVM records a new VM on node, in state creating, and gives it the
 // lowest network index nobody holds. Both happen in one transaction, so two
 // concurrent creates can never be given the same address.
-func (s *Store) InsertVM(id, node, base string, memMiB int) (api.VM, error) {
+func (s *Store) InsertVM(id, node, base string, memMiB int, expires time.Time) (api.VM, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return api.VM{}, err
@@ -92,25 +94,29 @@ func (s *Store) InsertVM(id, node, base string, memMiB int) (api.VM, error) {
 		return api.VM{}, errors.New("no network addresses left")
 	}
 	t := now()
-	if _, err := tx.Exec(`INSERT INTO vms (id, net_index, node, base, state, mem_mib, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`,
-		id, idx, node, base, StateCreating, memMiB, t, t); err != nil {
+	exp := ""
+	if !expires.IsZero() {
+		exp = expires.UTC().Format(time.RFC3339Nano)
+	}
+	if _, err := tx.Exec(`INSERT INTO vms (id, net_index, node, base, state, mem_mib, created_at, updated_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+		id, idx, node, base, StateCreating, memMiB, t, t, exp); err != nil {
 		return api.VM{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return api.VM{}, err
 	}
-	return api.VM{ID: id, NetIndex: idx, Node: node, Base: base, State: StateCreating, MemMiB: memMiB, Created: t}, nil
+	return api.VM{ID: id, NetIndex: idx, Node: node, Base: base, State: StateCreating, MemMiB: memMiB, Created: t, Expires: exp}, nil
 }
 
 func scanVM(sc interface{ Scan(...any) error }) (api.VM, error) {
 	var v api.VM
 	var updated string
-	err := sc.Scan(&v.ID, &v.NetIndex, &v.Node, &v.Base, &v.State, &v.MemMiB, &v.Created, &updated)
+	err := sc.Scan(&v.ID, &v.NetIndex, &v.Node, &v.Base, &v.State, &v.MemMiB, &v.Created, &updated, &v.Expires)
 	v.CDPPath = fmt.Sprintf("/v/%d", v.NetIndex)
 	return v, err
 }
 
-const vmCols = `id, net_index, node, base, state, mem_mib, created_at, updated_at`
+const vmCols = `id, net_index, node, base, state, mem_mib, created_at, updated_at, expires_at`
 
 func (s *Store) GetVM(id string) (api.VM, error) {
 	return scanVM(s.db.QueryRow(`SELECT `+vmCols+` FROM vms WHERE id = ?`, id))

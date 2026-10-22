@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,6 +21,7 @@ import (
 	"github.com/vedantxn/chromebox/internal/agent"
 	"github.com/vedantxn/chromebox/internal/api"
 	"github.com/vedantxn/chromebox/internal/base"
+	"github.com/vedantxn/chromebox/internal/gateway"
 	"github.com/vedantxn/chromebox/internal/node"
 	"github.com/vedantxn/chromebox/internal/orchestrator"
 	"github.com/vedantxn/chromebox/internal/remote"
@@ -43,9 +46,11 @@ func runAgent(listen string) error {
 // runOrchestrator: `chromebox orchestrator <api-listen>`; the CDP proxy listens
 // on :9222. Strategy from CHROMEBOX_STRATEGY (spread or pack).
 func runOrchestrator(listen string) error {
+	maxVMs, _ := strconv.Atoi(os.Getenv("CHROMEBOX_MAX_VMS"))
 	o, err := orchestrator.New(orchestrator.Config{
 		Token: os.Getenv("CHROMEBOX_TOKEN"), DBPath: "/var/lib/chromebox/orchestrator.db",
-		APIListen: listen, ProxyListen: ":9222",
+		APIListen: listen, ProxyAdmin: "http://127.0.0.1:9301",
+		SessionSecret: []byte(os.Getenv("CHROMEBOX_SESSION_SECRET")), MaxVMs: maxVMs,
 		Strategy: orchestrator.Strategy(os.Getenv("CHROMEBOX_STRATEGY")),
 	})
 	if err != nil {
@@ -54,6 +59,33 @@ func runOrchestrator(listen string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return o.Run(ctx)
+}
+
+// runProxy: `chromebox proxy <public-listen>` runs the CDP proxy as its own
+// process, so restarting the orchestrator does not cut anyone's browser.
+// Three listeners:
+//   - public (behind CloudFront): only /cdp/<signed token>
+//   - :9222, operator only (security group): /v/<n> without a token, for tests
+//   - 127.0.0.1:9301: admin; the orchestrator asks it to close a VM's connections
+func runProxy(public string) error {
+	secret := os.Getenv("CHROMEBOX_SESSION_SECRET")
+	if len(secret) < 32 {
+		return fmt.Errorf("CHROMEBOX_SESSION_SECRET must be at least 32 characters")
+	}
+	p := gateway.NewProxy(nil)
+	p.SetSecret([]byte(secret))
+	admin := http.NewServeMux()
+	admin.HandleFunc("POST /close/{n}", func(w http.ResponseWriter, r *http.Request) {
+		n, _ := strconv.Atoi(r.PathValue("n"))
+		json.NewEncoder(w).Encode(map[string]int{"Closed": p.CloseVM(n)})
+	})
+	errc := make(chan error, 3)
+	for addr, h := range map[string]http.Handler{public: p.Public(), ":9222": p, "127.0.0.1:9301": admin} {
+		srv := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
+		go func() { errc <- srv.ListenAndServe() }()
+	}
+	log.Printf("cdp proxy: public %s, operator :9222, admin 127.0.0.1:9301", public)
+	return <-errc
 }
 
 // ctlCmd is the command-line client for the orchestrator's API.

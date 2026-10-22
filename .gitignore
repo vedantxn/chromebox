@@ -13,3 +13,4 @@ vmlinux*
 node_modules/
 scripts/demo/*.png
 scripts/aws/token
+scripts/aws/session-secret

@@ -9,5 +9,5 @@ node=${1:?usage: deploy.sh <node>}
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/chromebox ./cmd/chromebox
 ip=$(scripts/aws/nodes.sh ip "$node")
 scp -q -i "$CB_SSH_KEY" bin/chromebox "ec2-user@$ip:/tmp/chromebox"
-scripts/aws/nodes.sh ssh "$node" 'sudo install -m 0755 /tmp/chromebox /usr/local/bin/chromebox; for u in chromebox-orchestrator chromebox-agent; do if systemctl is-enabled $u >/dev/null 2>&1; then sudo systemctl restart $u; fi; done'
+scripts/aws/nodes.sh ssh "$node" 'sudo install -m 0755 /tmp/chromebox /usr/local/bin/chromebox; for u in chromebox-proxy chromebox-orchestrator chromebox-agent; do if systemctl is-enabled $u >/dev/null 2>&1; then sudo systemctl restart $u; fi; done'
 echo "deployed to $node ($ip)"

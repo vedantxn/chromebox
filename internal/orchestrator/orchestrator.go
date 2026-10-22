@@ -25,6 +25,7 @@ import (
 	"github.com/vedantxn/chromebox/internal/gateway"
 	"github.com/vedantxn/chromebox/internal/netsetup"
 	"github.com/vedantxn/chromebox/internal/timing"
+	"github.com/vedantxn/chromebox/internal/token"
 )
 
 // Config is what the orchestrator needs to run.
@@ -32,7 +33,9 @@ type Config struct {
 	Token            string
 	DBPath           string
 	APIListen        string        // e.g. ":8080"
-	ProxyListen      string        // the CDP proxy agents connect to, e.g. ":9222"
+	ProxyAdmin       string        // the CDP proxy's local admin address, e.g. "http://127.0.0.1:9301"
+	SessionSecret    []byte        // signs session tokens the proxy checks
+	MaxVMs           int           // refuse creates beyond this many VMs (0: no cap)
 	Strategy         Strategy      // placement
 	HeartbeatTimeout time.Duration // a node silent for longer is down
 }
@@ -55,7 +58,6 @@ type Orchestrator struct {
 
 	pending map[string]int // memory held on a node for migrations in flight (guarded by place)
 
-	proxy   *gateway.Proxy
 	started time.Time
 }
 
@@ -71,19 +73,16 @@ func New(cfg Config) (*Orchestrator, error) {
 		return nil, err
 	}
 	o := &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}, started: time.Now()}
-	o.proxy = gateway.NewProxy(o.allowed)
 	return o, nil
 }
 
 // Run serves the API and the CDP proxy until ctx ends.
 func (o *Orchestrator) Run(ctx context.Context) error {
 	api := &http.Server{Addr: o.cfg.APIListen, Handler: o.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	proxy := &http.Server{Addr: o.cfg.ProxyListen, Handler: o.proxy, ReadHeaderTimeout: 10 * time.Second}
 	go o.reconcileLoop(ctx)
-	errc := make(chan error, 2)
+	errc := make(chan error, 1)
 	go func() { errc <- api.ListenAndServe() }()
-	go func() { errc <- proxy.ListenAndServe() }()
-	log.Printf("orchestrator: API on %s, CDP proxy on %s, strategy %s", o.cfg.APIListen, o.cfg.ProxyListen, o.cfg.Strategy)
+	log.Printf("orchestrator: API on %s, strategy %s, max VMs %d", o.cfg.APIListen, o.cfg.Strategy, o.cfg.MaxVMs)
 	select {
 	case <-ctx.Done():
 		return nil
@@ -102,6 +101,7 @@ func (o *Orchestrator) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/vms/{id}", o.deleteVM)
 	mux.HandleFunc("GET /v1/nodes", o.listNodes)
 	mux.HandleFunc("POST /v1/vms/{id}/migrate", o.migrateVM)
+	mux.HandleFunc("POST /v1/vms/{id}/token", o.issueToken)
 	mux.HandleFunc("POST /v1/nodes/{name}/drain", o.drainNode)
 	mux.HandleFunc("POST /v1/nodes/{name}/cordon", func(w http.ResponseWriter, r *http.Request) { o.cordon(w, r, true) })
 	mux.HandleFunc("POST /v1/nodes/{name}/uncordon", func(w http.ResponseWriter, r *http.Request) { o.cordon(w, r, false) })
@@ -200,13 +200,19 @@ func (o *Orchestrator) baseMem(name string) (int, bool) {
 // Create places a new VM, starts it from the base snapshot, and routes the
 // gateway to it. The VM takes its place (a database row with its memory) before
 // the slow part begins, so concurrent creates see each other.
-func (o *Orchestrator) Create(ctx context.Context, baseName string) (api.VM, api.CreateVMResponse, error) {
+func (o *Orchestrator) Create(ctx context.Context, baseName string, ttl time.Duration) (api.VM, api.CreateVMResponse, error) {
 	sw := timing.Start()
 	mem, ok := o.baseMem(baseName)
 	if !ok {
 		return api.VM{}, api.CreateVMResponse{}, fmt.Errorf("no node holds base %q", baseName)
 	}
 	o.place.Lock()
+	if o.cfg.MaxVMs > 0 {
+		if vms, err := o.store.ListVMs(); err == nil && len(vms) >= o.cfg.MaxVMs {
+			o.place.Unlock()
+			return api.VM{}, api.CreateVMResponse{}, fmt.Errorf("no node: at capacity (%d VMs)", o.cfg.MaxVMs)
+		}
+	}
 	views, err := o.views()
 	if err != nil {
 		o.place.Unlock()
@@ -217,7 +223,7 @@ func (o *Orchestrator) Create(ctx context.Context, baseName string) (api.VM, api
 		o.place.Unlock()
 		return api.VM{}, api.CreateVMResponse{}, err
 	}
-	vm, err := o.store.InsertVM(newID(), node, baseName, mem)
+	vm, err := o.store.InsertVM(newID(), node, baseName, mem, time.Now().Add(ttl))
 	o.place.Unlock()
 	if err != nil {
 		return api.VM{}, api.CreateVMResponse{}, err
@@ -280,6 +286,7 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 	}
 	_ = o.store.SetState(id, StateDeleting)
 	o.delRoute(ctx, vm.NetIndex)
+	o.closeConns(vm.NetIndex)
 	if ag, err := o.agentFor(vm.Node); err == nil {
 		if err := ag.DeleteVM(ctx, id); err != nil && o.up(vm.Node) {
 			return err // the node is up and refused: keep the record so it can be retried
@@ -290,14 +297,18 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 
 func (o *Orchestrator) createVM(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Base string `json:"base"`
+		Base       string `json:"base"`
+		TTLSeconds int    `json:"ttl_seconds"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Base == "" {
 		req.Base = "chrome-v1"
 	}
+	if req.TTLSeconds <= 0 || req.TTLSeconds > 3600 {
+		req.TTLSeconds = 900 // a VM nobody deletes is deleted after 15 minutes
+	}
 	started := time.Now()
-	vm, resp, err := o.Create(r.Context(), req.Base)
+	vm, resp, err := o.Create(r.Context(), req.Base, time.Duration(req.TTLSeconds)*time.Second)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if strings.HasPrefix(err.Error(), "no node") {
@@ -307,7 +318,7 @@ func (o *Orchestrator) createVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"vm": vm, "laps": resp.Laps, "orch_laps": resp.OrchLaps, "total_ms": float64(time.Since(started).Microseconds()) / 1000,
+		"vm": vm, "connect_token": o.sign(vm, "cdp", time.Until(vm.ExpiresAt())), "laps": resp.Laps, "orch_laps": resp.OrchLaps, "total_ms": float64(time.Since(started).Microseconds()) / 1000,
 	})
 }
 
@@ -384,4 +395,48 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// sign issues a token for VM v, valid for ttl (never beyond the VM's own expiry).
+func (o *Orchestrator) sign(v api.VM, kind string, ttl time.Duration) string {
+	exp := time.Now().Add(ttl)
+	if e := v.ExpiresAt(); !e.IsZero() && e.Before(exp) {
+		exp = e
+	}
+	return token.Sign(o.cfg.SessionSecret, token.Claims{Session: v.ID, Index: v.NetIndex, Expires: exp.Unix(), Kind: kind})
+}
+
+// issueToken: POST /v1/vms/{id}/token?kind=view&ttl=300 gives a fresh token,
+// e.g. a short-lived one for the dashboard's live view.
+func (o *Orchestrator) issueToken(w http.ResponseWriter, r *http.Request) {
+	v, err := o.store.GetVM(r.PathValue("id"))
+	if err != nil || (v.State != StateRunning && v.State != StateMigrating) {
+		http.Error(w, "no running vm "+r.PathValue("id"), http.StatusNotFound)
+		return
+	}
+	kind := r.URL.Query().Get("kind")
+	if kind == "" {
+		kind = "cdp"
+	}
+	ttl, _ := time.ParseDuration(r.URL.Query().Get("ttl") + "s")
+	if ttl <= 0 || ttl > time.Hour {
+		ttl = 5 * time.Minute
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": o.sign(v, kind, ttl)})
+}
+
+// closeConns asks the CDP proxy to close every client connection to VM index n.
+func (o *Orchestrator) closeConns(n int) int {
+	if o.cfg.ProxyAdmin == "" {
+		return 0
+	}
+	resp, err := http.Post(fmt.Sprintf("%s/close/%d", o.cfg.ProxyAdmin, n), "text/plain", nil)
+	if err != nil {
+		log.Printf("proxy admin: %v", err)
+		return 0
+	}
+	defer resp.Body.Close()
+	var out struct{ Closed int }
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return out.Closed
 }

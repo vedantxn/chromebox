@@ -31,6 +31,24 @@ func (o *Orchestrator) reconcileLoop(ctx context.Context) {
 			rerouted = true
 		}
 		o.markLost(ctx)
+		o.expire(ctx)
+	}
+}
+
+// expire deletes VMs past their lifetime. Nobody may keep a stranger's browser
+// running forever by forgetting to delete it.
+func (o *Orchestrator) expire(ctx context.Context) {
+	vms, err := o.store.ListVMs()
+	if err != nil {
+		return
+	}
+	for _, v := range vms {
+		if e := v.ExpiresAt(); v.State == StateRunning && !e.IsZero() && time.Now().After(e) {
+			log.Printf("%s reached its lifetime, deleting", v.ID)
+			if err := o.Delete(ctx, v.ID); err != nil {
+				log.Printf("expire %s: %v", v.ID, err)
+			}
+		}
 	}
 }
 
@@ -49,7 +67,7 @@ func (o *Orchestrator) markLost(ctx context.Context) {
 		}
 		_ = o.store.SetState(v.ID, StateLost)
 		o.delRoute(ctx, v.NetIndex)
-		n := o.proxy.CloseVM(v.NetIndex)
+		n := o.closeConns(v.NetIndex)
 		log.Printf("node %s is down: %s lost, %d client connection(s) closed", v.Node, v.ID, n)
 	}
 }
@@ -97,6 +115,8 @@ func (o *Orchestrator) fence(st api.Status) {
 	}
 }
 
+// (allowed is no longer used by the proxy, which now trusts signed tokens; kept
+// for the operator-only /v/<n> listener if it is ever wired back.)
 // allowed tells the proxy whether VM index n is running, so that a client asking
 // for a lost or unknown VM gets an immediate 404 instead of a dial that hangs.
 func (o *Orchestrator) allowed(n int) bool {

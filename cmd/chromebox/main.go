@@ -10,7 +10,8 @@
 //	chromebox base build <name> <image>  boot an image, let it settle, snapshot it as a base
 //	chromebox base push <name> <host>  copy a base snapshot to another node
 //	chromebox agent <listen>          run the node agent (heartbeats to the orchestrator)
-//	chromebox orchestrator <listen>   run the control plane (API on <listen>, CDP proxy on :9222)
+//	chromebox orchestrator <listen>   run the control plane API
+//	chromebox proxy <listen>          run the CDP proxy (public, token-checked, on <listen>)
 //	chromebox ctl create|ls|nodes|rm|cordon|uncordon   talk to the orchestrator
 //	chromebox clone <id> <base> net=N  make a VM from a base snapshot with network index N
 //	chromebox bench-clone <n> <base>   clone n VMs one at a time and summarize the timings
@@ -100,6 +101,8 @@ func main() {
 		err = runAgent(arg)
 	case "orchestrator":
 		err = runOrchestrator(arg)
+	case "proxy":
+		err = runProxy(arg)
 	case "ctl":
 		err = ctlCmd(os.Args[2:])
 	case "guest-ping":

@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/netsetup"
+	"github.com/vedantxn/chromebox/internal/token"
 )
 
 // cdpPort is where the guest's bridge exposes Chrome's DevTools port.
@@ -33,6 +36,7 @@ type ctxKey int
 const (
 	keyVM ctxKey = iota
 	keyClientHost
+	keyRest // the path to request from Chrome, when the handler already worked it out
 )
 
 // Handler returns the CDP proxy: an agent connects to
@@ -53,6 +57,83 @@ type Proxy struct {
 
 	mu    sync.Mutex
 	conns map[int]map[*trackedConn]struct{}
+
+	secret []byte // signs session tokens; nil disables /cdp/<token>
+}
+
+// SetSecret enables token-authenticated access at /cdp/<token>[/path].
+func (p *Proxy) SetSecret(secret []byte) { p.secret = secret }
+
+// Public returns the handler for the internet-facing listener: only
+// /cdp/<token> paths are served there. The /v/<n> paths, which need no token,
+// stay on a listener only the operator can reach.
+func (p *Proxy) Public() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/cdp/") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		p.ServeHTTP(w, r)
+	})
+}
+
+// serveToken handles /cdp/<token>[/rest]. A bare /cdp/<token> means "the
+// browser": the proxy asks Chrome where its browser endpoint is, so a client
+// can pass the URL straight to connectOverCDP.
+func (p *Proxy) serveToken(w http.ResponseWriter, r *http.Request) {
+	tok, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/cdp/"), "/")
+	if p.secret == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	c, err := token.Verify(p.secret, tok, time.Now())
+	if err != nil {
+		http.Error(w, "invalid session token: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+	nn, err := netsetup.ForIndex(c.Index)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	path := "/" + rest
+	if rest == "" {
+		if path, err = browserPath(r.Context(), netip.AddrPortFrom(nn.GuestIP, cdpPort).String()); err != nil {
+			http.Error(w, "browser not reachable: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+	ctx := context.WithValue(r.Context(), keyVM, c.Index)
+	ctx = context.WithValue(ctx, keyClientHost, r.Host)
+	ctx = context.WithValue(ctx, keyRest, path)
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		log.Printf("vm %d (%s): websocket open", c.Index, c.Session)
+		w = &hijackTracker{ResponseWriter: w, track: func(tc *trackedConn) { p.add(c.Index, tc) }}
+	}
+	p.rp.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// browserPath asks Chrome for its browser-level WebSocket path.
+func browserPath(ctx context.Context, target string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+target+"/json/version", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var v struct {
+		URL string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		return "", err
+	}
+	u, err := url.Parse(v.URL)
+	if err != nil {
+		return "", err
+	}
+	return u.Path, nil
 }
 
 // NewProxy returns a proxy. allowed, if set, refuses VMs the control plane does
@@ -75,6 +156,10 @@ func (p *Proxy) CloseVM(n int) int {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/cdp/") {
+		p.serveToken(w, r)
+		return
+	}
 	m := vmPath.FindStringSubmatch(r.URL.Path)
 	if m == nil {
 		http.Error(w, "use /v/<vm index>/...", http.StatusNotFound)
@@ -163,7 +248,9 @@ func newReverseProxy() *httputil.ReverseProxy {
 			nn, _ := netsetup.ForIndex(n) // validated by the caller
 			target := netip.AddrPortFrom(nn.GuestIP, cdpPort).String()
 			rest := "/"
-			if m := vmPath.FindStringSubmatch(pr.In.URL.Path); m != nil && m[2] != "" {
+			if r, ok := pr.In.Context().Value(keyRest).(string); ok {
+				rest = r
+			} else if m := vmPath.FindStringSubmatch(pr.In.URL.Path); m != nil && m[2] != "" {
 				rest = m[2]
 			}
 			pr.Out.URL.Scheme = "http"

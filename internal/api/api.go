@@ -2,7 +2,11 @@
 // agents and the ctl client.
 package api
 
-import "github.com/vedantxn/chromebox/internal/timing"
+import (
+	"time"
+
+	"github.com/vedantxn/chromebox/internal/timing"
+)
 
 // VMInfo is one VM as an agent reports it.
 type VMInfo struct {
@@ -63,6 +67,7 @@ type VM struct {
 	MemMiB     int     `json:"mem_mib"`
 	CDPPath    string  `json:"cdp_path"`
 	Created    string  `json:"created_at"`
+	Expires    string  `json:"expires_at,omitempty"`
 	PssMiB     float64 `json:"pss_mib,omitempty"`
 	PrivateMiB float64 `json:"private_mib,omitempty"`
 }
@@ -98,4 +103,10 @@ type IncomingRequest struct {
 	ID       string `json:"id"`
 	Base     string `json:"base"`
 	NetIndex int    `json:"net_index"`
+}
+
+// ExpiresAt parses Expires; the zero time means "never".
+func (v VM) ExpiresAt() time.Time {
+	t, _ := time.Parse(time.RFC3339Nano, v.Expires)
+	return t
 }
