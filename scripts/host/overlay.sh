@@ -47,18 +47,14 @@ wan=\$(ip -o route show default | awk '{print \$5}' | head -1)
 sudo iptables -t nat -C POSTROUTING -s 10.200.0.0/16 -o "\$wan" -j MASQUERADE 2>/dev/null \\
   || sudo iptables -t nat -A POSTROUTING -s 10.200.0.0/16 -o "\$wan" -j MASQUERADE
 echo "NAT: 10.200.0.0/16 -> \$wan"
-sudo tee /etc/systemd/system/chromebox-gw.service >/dev/null <<'U'
-[Unit]
-Description=chromebox CDP proxy
-After=network-online.target
-[Service]
-ExecStart=/usr/local/bin/chromebox gateway :9222
-Restart=always
-[Install]
-WantedBy=multi-user.target
-U
-sudo systemctl daemon-reload
-if [ -x /usr/local/bin/chromebox ]; then sudo systemctl enable --now chromebox-gw >/dev/null 2>&1; sudo systemctl restart chromebox-gw; echo "cdp proxy: \$(systemctl is-active chromebox-gw)"; else echo "cdp proxy: binary not deployed yet (scripts/deploy.sh gateway)"; fi
+# The CDP proxy is chromebox-proxy, installed by services.sh. Remove the M2
+# unit that ran it before, which would fight it for :9222.
+if [ -f /etc/systemd/system/chromebox-gw.service ]; then
+  sudo systemctl disable --now chromebox-gw >/dev/null 2>&1 || true
+  sudo rm -f /etc/systemd/system/chromebox-gw.service
+  sudo systemctl daemon-reload
+  sudo systemctl reset-failed chromebox-gw 2>/dev/null || true
+fi
 EOS
 
 for n in $nodes; do
