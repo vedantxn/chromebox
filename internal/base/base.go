@@ -204,9 +204,23 @@ func Clone(ctx context.Context, p vm.Paths, name string, netIndex int, sw *timin
 	}
 	sw.Lap("tap + firecracker ready")
 
+	mem := firecracker.MemBackend{BackendType: "File", BackendPath: ShmMem(name)}
+	// CHROMEBOX_UFFD (M5, experiment): serve the memory through our own
+	// page-fault handler instead of letting Firecracker map the file.
+	if v, ok := os.LookupEnv("CHROMEBOX_UFFD"); ok {
+		args := []string{"file=" + ShmMem(name)}
+		if v != "" {
+			args = append(args, v)
+		}
+		if err := vm.StartUffd(p, args...); err != nil {
+			return err
+		}
+		mem = firecracker.MemBackend{BackendType: "Uffd", BackendPath: p.UffdSock()}
+		sw.Lap("uffd handler ready")
+	}
 	if err := c.LoadSnapshot(ctx, firecracker.SnapshotLoad{
 		SnapshotPath:     ShmState(name),
-		MemBackend:       firecracker.MemBackend{BackendType: "File", BackendPath: ShmMem(name)},
+		MemBackend:       mem,
 		ResumeVM:         true,
 		NetworkOverrides: []firecracker.NetworkOverride{{IfaceID: "eth0", HostDevName: nn.TapName}},
 		VsockOverride:    &firecracker.VsockOverride{UDSPath: p.VsockSock()},

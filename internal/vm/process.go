@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -140,4 +141,39 @@ func killProcess(p Paths) error {
 	_ = os.Remove(p.PIDFile())
 	_ = os.Remove(p.Socket())
 	return nil
+}
+
+// UffdSock is where a VM's page-fault handler listens for Firecracker.
+func (p Paths) UffdSock() string { return filepath.Join(p.Dir, "uffd.sock") }
+
+// StartUffd starts the page-fault handler for VM p (`chromebox uffd <id>
+// args...`) as its own process, detached like Firecracker, so that restarting
+// the agent never leaves a VM waiting on a page nobody will serve. It returns
+// once the handler listens. The handler exits by itself when every page is in.
+func StartUffd(p Paths, args ...string) error {
+	_ = os.Remove(p.UffdSock())
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	log, err := os.OpenFile(filepath.Join(p.Dir, "uffd.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer log.Close()
+	cmd := exec.Command(self, append([]string{"uffd", filepath.Base(p.Dir)}, args...)...)
+	cmd.Stdout, cmd.Stderr = log, log
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start uffd handler: %w", err)
+	}
+	_ = cmd.Process.Release()
+	// Wait for the socket file. Not by connecting: the first connection the
+	// handler accepts must be Firecracker's.
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
+		if _, err := os.Stat(p.UffdSock()); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("uffd handler did not start (see %s/uffd.log)", p.Dir)
 }

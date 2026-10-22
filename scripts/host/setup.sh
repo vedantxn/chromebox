@@ -36,3 +36,12 @@ sudo dnf install -y -q rsync
 sudo mkdir -p "$STATE_DIR"/{kernels,images,vms}
 sudo chown -R "$USER": "$STATE_DIR"
 echo "ok: $STATE_DIR ready; host kernel $(uname -r)"
+
+# 4. userfaultfd (M5): a restored VM's memory can be served page by page by our
+# handler. Firecracker runs as $USER, and on this kernel it opens
+# /dev/userfaultfd, which is root-only by default. Give $USER's group access,
+# not everyone: userfaultfd is a known aid to kernel exploits.
+echo "KERNEL==\"userfaultfd\", GROUP=\"$(id -gn)\", MODE=\"0660\"" | sudo tee /etc/udev/rules.d/90-userfaultfd.rules >/dev/null
+sudo udevadm control --reload
+sudo udevadm trigger --name-match=userfaultfd
+echo "ok: $(ls -l /dev/userfaultfd)"

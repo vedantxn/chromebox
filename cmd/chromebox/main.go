@@ -109,6 +109,8 @@ func main() {
 		err = guestPing(ctx, p)
 	case "base":
 		err = baseCmd(ctx, os.Args[2:])
+	case "uffd":
+		err = uffdCmd(p, os.Args[3:])
 	case "clone":
 		err = cloneCmd(ctx, p, os.Args[3:])
 	case "gateway":
