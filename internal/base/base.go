@@ -47,6 +47,18 @@ type Manifest struct {
 	// ForkOf names the VM a fork image was taken from (M6). A fork image is a
 	// base made on the fly from a running browser, kept only while VMs use it.
 	ForkOf string `json:"fork_of,omitempty"`
+	// DiskBase is the regular base this disk descends from (reflink by
+	// reflink), which every node holds: another node can rebuild the disk
+	// from its own copy of it plus the blocks that differ.
+	DiskBase string `json:"disk_base,omitempty"`
+}
+
+// diskBase is the regular base a VM made from base name descends from.
+func diskBase(name string) string {
+	if m, err := Read(name); err == nil && m.DiskBase != "" {
+		return m.DiskBase
+	}
+	return name
 }
 
 // IsFork says whether a base name is a fork image.
@@ -123,9 +135,52 @@ func Fork(ctx context.Context, c *firecracker.Client, p vm.Paths, name string, s
 		return 0, err
 	}
 	sw.Lap("zero pages punched out")
-	b, _ := json.MarshalIndent(Manifest{Name: name, Image: imgName, VCPUs: img.VCPUs, MemMiB: img.MemMiB,
-		BuiltAt: time.Now().UTC(), ForkOf: filepath.Base(p.Dir)}, "", "  ")
-	return freed, os.WriteFile(manifest(name), append(b, '\n'), 0o644)
+	m := Manifest{Name: name, Image: imgName, VCPUs: img.VCPUs, MemMiB: img.MemMiB,
+		BuiltAt: time.Now().UTC(), ForkOf: filepath.Base(p.Dir), DiskBase: diskBase(vm.BaseOf(p))}
+	return freed, writeManifest(m)
+}
+
+func writeManifest(m Manifest) error {
+	b, _ := json.MarshalIndent(m, "", "  ")
+	return os.WriteFile(manifest(m.Name), append(b, '\n'), 0o644)
+}
+
+// Install receives a fork image made on another node: its manifest and
+// device state, its disk as the blocks that differ from m.DiskBase (which this
+// node holds), and its memory as runs of non-zero pages (pageserver.WriteRuns
+// format), written into a sparse file in RAM: zero pages stay holes. The
+// manifest is written last, so a half-received image is never used.
+func Install(m Manifest, vmstate []byte, disk func(path string) error, memory func(path string) error) error {
+	if !IsFork(m.Name) {
+		return fmt.Errorf("only fork images travel between nodes: %q", m.Name)
+	}
+	if _, err := Read(m.DiskBase); err != nil {
+		return fmt.Errorf("this node lacks base %s that %s descends from", m.DiskBase, m.Name)
+	}
+	for _, d := range []string{dir(m.Name), shm(m.Name)} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return err
+		}
+	}
+	fail := func(err error) error { _ = Delete(m.Name); return err }
+	if err := vm.CloneFile(Disk(m.DiskBase), Disk(m.Name)); err != nil {
+		return fail(err)
+	}
+	if err := disk(Disk(m.Name)); err != nil {
+		return fail(fmt.Errorf("disk: %w", err))
+	}
+	if err := os.WriteFile(ShmState(m.Name), vmstate, 0o644); err != nil {
+		return fail(err)
+	}
+	if err := memory(ShmMem(m.Name)); err != nil {
+		return fail(fmt.Errorf("memory: %w", err))
+	}
+	return writeManifest(m)
+}
+
+// ImageFiles is where a fork image's parts are, for sending it elsewhere.
+func ImageFiles(name string) (vmstate, mem, disk string) {
+	return ShmState(name), ShmMem(name), Disk(name)
 }
 
 func dir(name string) string      { return filepath.Join(Dir, name) }

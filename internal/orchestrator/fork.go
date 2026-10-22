@@ -24,6 +24,7 @@ type ForkResult struct {
 	ImageMs  float64  `json:"image_ms"` // request -> image ready
 	TotalMs  float64  `json:"total_ms"` // request -> every copy answering
 	Copies   []api.VM `json:"copies"`
+	Spills   []Spill  `json:"spills,omitempty"` // other nodes the image was pulled to
 	Errors   []string `json:"errors,omitempty"`
 }
 
@@ -55,28 +56,88 @@ func (o *Orchestrator) Fork(ctx context.Context, id string, n int, ttl time.Dura
 	res.PausedMs, res.ImageMiB, res.ZeroMiB = fr.PausedMs, fr.HeldMiB, fr.ZeroMiB
 	res.ImageMs = float64(time.Since(start).Microseconds()) / 1000
 
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			vm, _, err := o.Create(ctx, res.Image, ttl, onReserve...)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				res.Errors = append(res.Errors, err.Error())
-				return
-			}
-			res.Copies = append(res.Copies, vm)
-		}()
+	// Copies go to the parent's node while it has room: there they share the
+	// image's memory. The rest spill: the image is pulled to another node (its
+	// disk as a delta from the base every node holds, its memory without zero
+	// pages), and the copies that did not fit are placed again.
+	left := n
+	have := []string{parent.Node} // nodes holding the image
+	for {
+		made, full := o.createCopies(ctx, res.Image, left, ttl, &res, onReserve...)
+		res.Copies = append(res.Copies, made...)
+		if full == 0 {
+			break
+		}
+		left = full
+		mem, _ := o.baseMem(res.Image)
+		views, err := o.views()
+		if err != nil {
+			res.Errors = append(res.Errors, err.Error())
+			break
+		}
+		node, err := Place(views, Request{MemMiB: mem, Base: fr.DiskBase}, o.cfg.Strategy, have...)
+		if err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("%d copies did not fit: %v", left, err))
+			break
+		}
+		dst, err := o.agentFor(node)
+		if err != nil {
+			res.Errors = append(res.Errors, err.Error())
+			break
+		}
+		t := time.Now()
+		pr, err := dst.PullImage(ctx, res.Image, ag.URL)
+		if err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("spill to %s: %v", node, err))
+			break
+		}
+		res.Spills = append(res.Spills, Spill{Node: node, Ms: float64(time.Since(t).Microseconds()) / 1000,
+			DiskMiB: pr.DiskMiB, MemMiB: pr.MemMiB})
+		have = append(have, node)
 	}
-	wg.Wait()
 	res.TotalMs = float64(time.Since(start).Microseconds()) / 1000
 	if len(res.Copies) == 0 {
 		return res, fmt.Errorf("no copy started: %s", strings.Join(res.Errors, "; "))
 	}
 	return res, nil
+}
+
+// Spill is one node a fork image was pulled to, and what that cost.
+type Spill struct {
+	Node    string  `json:"node"`
+	Ms      float64 `json:"ms"`
+	DiskMiB float64 `json:"disk_mib"`
+	MemMiB  float64 `json:"mem_mib"`
+}
+
+// createCopies starts n copies from image in parallel. It returns the ones
+// that started and how many failed only because no node holding the image had
+// room (those can spill); other failures, such as an account limit, are
+// recorded in res.Errors and end there.
+func (o *Orchestrator) createCopies(ctx context.Context, image string, n int, ttl time.Duration, res *ForkResult, onReserve ...func(id string) error) ([]api.VM, int) {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var made []api.VM
+	full := 0
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			vm, _, err := o.Create(ctx, image, ttl, onReserve...)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				made = append(made, vm)
+			case strings.HasPrefix(err.Error(), "no node can take"):
+				full++
+			default:
+				res.Errors = append(res.Errors, err.Error())
+			}
+		}()
+	}
+	wg.Wait()
+	return made, full
 }
 
 func (o *Orchestrator) forkVM(w http.ResponseWriter, r *http.Request) {

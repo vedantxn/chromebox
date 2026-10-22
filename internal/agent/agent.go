@@ -95,6 +95,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{id}/state", a.putState)
 	mux.HandleFunc("POST /v1/vms/{id}/fork-image", a.forkImage)
 	mux.HandleFunc("DELETE /v1/bases/{name}", a.deleteBase)
+	a.imageRoutes(mux)
 	mux.HandleFunc("POST /v1/vms/{id}/delta", a.putDelta)
 	return a.auth(mux)
 }
@@ -640,7 +641,7 @@ func (a *Agent) forkImage(w http.ResponseWriter, r *http.Request) {
 	paused, _ := sw.Steps()
 	writeJSON(w, http.StatusOK, api.ForkImageResponse{Laps: sw.Record(),
 		PausedMs: float64(paused["parent paused, snapshot, resumed"].Microseconds()) / 1000,
-		HeldMiB:  base.HeldMiB(req.Image, m), ZeroMiB: int(freed >> 20)})
+		HeldMiB:  base.HeldMiB(req.Image, m), ZeroMiB: int(freed >> 20), DiskBase: m.DiskBase})
 }
 
 func (a *Agent) deleteBase(w http.ResponseWriter, r *http.Request) {

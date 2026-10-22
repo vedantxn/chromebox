@@ -43,8 +43,16 @@ type ForkImageRequest struct {
 type ForkImageResponse struct {
 	Laps     timing.Record `json:"laps"`
 	PausedMs float64       `json:"paused_ms"`
-	HeldMiB  int           `json:"held_mib"` // RAM the image holds, zero pages punched out
-	ZeroMiB  int           `json:"zero_mib"` // zero pages that were punched out
+	HeldMiB  int           `json:"held_mib"`  // RAM the image holds, zero pages punched out
+	ZeroMiB  int           `json:"zero_mib"`  // zero pages that were punched out
+	DiskBase string        `json:"disk_base"` // the regular base its disk descends from
+}
+
+// PullImageResponse: what travelled to bring a fork image to another node.
+type PullImageResponse struct {
+	Laps    timing.Record `json:"laps"`
+	DiskMiB float64       `json:"disk_mib"` // blocks that differ from the regular base
+	MemMiB  float64       `json:"mem_mib"`  // non-zero memory
 }
 
 // Status is what an agent reports about its node: sent with every heartbeat and

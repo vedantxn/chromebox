@@ -142,14 +142,34 @@ func (s *Server) serveFaults(c net.Conn) {
 	}
 }
 
-// stream sends the memory as runs of pages, in order: a non-zero run as
-// (offset, length, bytes), a zero run as (offset, length|zeroRun) with no
-// bytes, so the target can map those pages without a round trip. Then (0, 0)
-// to say that was all, then it waits for the target's one-byte ack.
+// stream sends the memory as runs (WriteRuns), then waits for the target's
+// one-byte ack.
 func (s *Server) stream(c net.Conn) error {
 	w := bufio.NewWriterSize(c, 1<<20)
+	if err := WriteRuns(w, s.mem, func(n int) {
+		s.mu.Lock()
+		s.sent += int64(n)
+		s.mu.Unlock()
+	}); err != nil {
+		return err
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	var ack [1]byte
+	_ = c.SetReadDeadline(time.Now().Add(60 * time.Second))
+	if _, err := io.ReadFull(c, ack[:]); err != nil {
+		return fmt.Errorf("no acknowledgement from the target: %w", err)
+	}
+	return nil
+}
+
+// WriteRuns writes memory as runs of pages, in order: a non-zero run as
+// (offset, length, bytes), a zero run as (offset, length|zeroRun) with no
+// bytes, so the reader can map or skip those pages without them travelling.
+// Then (0, 0) to say that was all. sent is told each non-zero run's size.
+func WriteRuns(w io.Writer, mem []byte, sent func(int)) error {
 	var hdr [12]byte
-	mem := s.mem
 	for base := 0; base < len(mem); base += chunk {
 		end := min(base+chunk, len(mem))
 		for i := base; i < end; {
@@ -171,26 +191,16 @@ func (s *Server) stream(c net.Conn) error {
 				if _, err := w.Write(mem[i:j]); err != nil {
 					return err
 				}
-				s.mu.Lock()
-				s.sent += int64(j - i)
-				s.mu.Unlock()
+				if sent != nil {
+					sent(j - i)
+				}
 			}
 			i = j
 		}
 	}
 	clear(hdr[:])
-	if _, err := w.Write(hdr[:]); err != nil {
-		return err
-	}
-	if err := w.Flush(); err != nil {
-		return err
-	}
-	var ack [1]byte
-	_ = c.SetReadDeadline(time.Now().Add(60 * time.Second))
-	if _, err := io.ReadFull(c, ack[:]); err != nil {
-		return fmt.Errorf("no acknowledgement from the target: %w", err)
-	}
-	return nil
+	_, err := w.Write(hdr[:])
+	return err
 }
 
 // The hello is the token (length-prefixed) and one byte naming the connection.
@@ -261,11 +271,24 @@ func (c *Client) Fetch(off uint64, buf []byte) error {
 // Stream calls install for each non-zero run the source sends and zero for
 // each zero run, until the end marker.
 func (c *Client) Stream(install func(off uint64, data []byte) error, zero func(off, n uint64) error) error {
-	r := bufio.NewReaderSize(c.stream, 1<<20)
+	return ReadRuns(&deadlineReader{c.stream}, install, zero)
+}
+
+// deadlineReader gives up on a source silent for silentSource.
+type deadlineReader struct{ c net.Conn }
+
+func (d *deadlineReader) Read(p []byte) (int, error) {
+	_ = d.c.SetReadDeadline(time.Now().Add(silentSource))
+	return d.c.Read(p)
+}
+
+// ReadRuns reads what WriteRuns wrote, calling install for each non-zero run
+// and zero for each zero run (either may be nil to ignore), until the end.
+func ReadRuns(src io.Reader, install func(off uint64, data []byte) error, zero func(off, n uint64) error) error {
+	r := bufio.NewReaderSize(src, 1<<20)
 	var hdr [12]byte
 	buf := make([]byte, chunk)
 	for {
-		_ = c.stream.SetReadDeadline(time.Now().Add(silentSource))
 		if _, err := io.ReadFull(r, hdr[:]); err != nil {
 			return err
 		}
@@ -275,19 +298,23 @@ func (c *Client) Stream(install func(off uint64, data []byte) error, zero func(o
 			return nil
 		}
 		if n&zeroRun != 0 {
-			if err := zero(off, uint64(n&^zeroRun)); err != nil {
-				return err
+			if zero != nil {
+				if err := zero(off, uint64(n&^zeroRun)); err != nil {
+					return err
+				}
 			}
 			continue
 		}
 		if int(n) > len(buf) {
-			return fmt.Errorf("stream record of %d bytes is larger than a chunk", n)
+			return fmt.Errorf("record of %d bytes is larger than a chunk", n)
 		}
 		if _, err := io.ReadFull(r, buf[:n]); err != nil {
 			return err
 		}
-		if err := install(off, buf[:n]); err != nil {
-			return err
+		if install != nil {
+			if err := install(off, buf[:n]); err != nil {
+				return err
+			}
 		}
 	}
 }
