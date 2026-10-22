@@ -213,19 +213,56 @@ func (h *hijackTracker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	tc := &trackedConn{Conn: c}
+	tc := &trackedConn{Conn: c, done: make(chan struct{}), lastWrite: time.Now()}
 	h.track(tc)
+	go tc.keepalive()
 	return tc, rw, nil
 }
 
+// trackedConn is the client side of a proxied WebSocket. The reverse proxy
+// writes Chrome's frames to it; it watches their boundaries so that keepalive
+// can slip a ping in between two of them.
 type trackedConn struct {
 	net.Conn
 	once    sync.Once
 	onClose func()
+	done    chan struct{}
+
+	mu        sync.Mutex // one writer at a time: the proxy's copy or a ping
+	frames    frameTracker
+	lastWrite time.Time
+}
+
+func (c *trackedConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n, err := c.Conn.Write(p)
+	c.frames.feed(p[:n])
+	c.lastWrite = time.Now()
+	return n, err
+}
+
+func (c *trackedConn) keepalive() {
+	t := time.NewTicker(keepaliveAfter / 2)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-t.C:
+		}
+		c.mu.Lock()
+		if c.frames.atBoundary() && time.Since(c.lastWrite) >= keepaliveAfter {
+			_, _ = c.Conn.Write(pingFrame)
+			c.lastWrite = time.Now()
+		}
+		c.mu.Unlock()
+	}
 }
 
 func (c *trackedConn) Close() error {
 	c.once.Do(func() {
+		close(c.done)
 		if c.onClose != nil {
 			c.onClose()
 		}
