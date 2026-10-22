@@ -443,6 +443,14 @@ func (a *Agent) Status() api.Status {
 	}
 	a.outMu.Unlock()
 	for _, v := range listVMs() {
+		if p := vm.PathsFor(v.ID); vm.MemoryOrphaned(p) {
+			// Its page-fault handler died before the memory was complete: the
+			// guest is frozen on a page nobody will serve. Kill it and stop
+			// reporting it; the orchestrator then declares it lost.
+			log.Printf("%s: memory handler died before the memory was complete, killing the VM", v.ID)
+			_ = vm.Kill(p)
+			continue
+		}
 		// A VM that moved away but whose memory is still being served is not
 		// this node's: reporting it would get it fenced mid-stream.
 		if !moving[v.ID] {

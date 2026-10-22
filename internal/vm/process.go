@@ -146,6 +146,22 @@ func killProcess(p Paths) error {
 // UffdSock is where a VM's page-fault handler listens for Firecracker.
 func (p Paths) UffdSock() string { return filepath.Join(p.Dir, "uffd.sock") }
 
+// UffdPID holds the handler's pid while the VM's memory is incomplete; the
+// handler removes it once every page is in.
+func (p Paths) UffdPID() string { return filepath.Join(p.Dir, "uffd.pid") }
+
+// MemoryOrphaned reports a VM whose memory can never complete: its handler
+// died before finishing. The guest will hang on its next missing page, so
+// such a VM should be killed.
+func MemoryOrphaned(p Paths) bool {
+	b, err := os.ReadFile(p.UffdPID())
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	return err == nil && syscall.Kill(pid, 0) != nil
+}
+
 // StartUffd starts the page-fault handler for VM p (`chromebox uffd <id>
 // args...`) as its own process, detached like Firecracker, so that restarting
 // the agent never leaves a VM waiting on a page nobody will serve. It returns

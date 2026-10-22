@@ -62,6 +62,9 @@ func uffdCmd(p vm.Paths, args []string) (err error) {
 			return fmt.Errorf("uffd: unknown argument %q", a)
 		}
 	}
+	if err := os.WriteFile(p.UffdPID(), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		return err
+	}
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: p.UffdSock(), Net: "unix"})
 	if err != nil {
 		return err
@@ -98,6 +101,13 @@ func uffdCmd(p vm.Paths, args []string) (err error) {
 			_ = vm.Kill(p)
 		}
 	}()
+	if os.Getenv("CHROMEBOX_FAULT") == "handler-dies" { // fault injection for break-it tests:
+		go func() { // the handler crashes mid-stream, without the cleanup above
+			time.Sleep(200 * time.Millisecond)
+			fmt.Println("fault injection: handler dies")
+			os.Exit(9)
+		}()
+	}
 	if err := <-dialed; err != nil {
 		return fmt.Errorf("connect to the source's page server: %w", err)
 	}
@@ -171,6 +181,7 @@ func uffdCmd(p vm.Paths, args []string) (err error) {
 	}
 	_ = h.Close()
 	// The VM holds all its memory now; nothing below may fail it.
+	_ = os.Remove(p.UffdPID())
 	if pages != nil {
 		if err := pages.Ack(); err != nil {
 			fmt.Printf("could not tell the source we are done (it will time out): %v\n", err)

@@ -25,4 +25,5 @@ echo "drain took $(echo "$(date +%s.%N) - $start" | bc | cut -c1-5) s"
 wait
 for id in "${ids[@]}"; do echo "$id: $(grep -E 'gap between|closed events' "$dir/$id" | tr -s ' ' | tr '\n' ' ')"; done
 for id in "${ids[@]}"; do $CB ctl rm "$id" >/dev/null; done
+$CB ctl uncordon node-a >/dev/null # a drain leaves the node cordoned
 rm -rf "$dir"
