@@ -2,7 +2,7 @@ import { auth } from '@/auth';
 import SignIn from './sign-in';
 import Link from 'next/link';
 
-const quickstart = `npm install https://batonvm.vercel.app/batonvm-0.2.0.tgz playwright-core
+const quickstart = `npm install batonvm playwright-core
 
 import { Baton } from 'batonvm';
 import { chromium } from 'playwright-core';

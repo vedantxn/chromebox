@@ -1,6 +1,6 @@
 import Link from 'next/link';
 
-const install = `npm install https://batonvm.vercel.app/batonvm-0.2.0.tgz playwright-core
+const install = `npm install batonvm playwright-core
 export BATON_API_KEY=bk_...`;
 
 const quickstart = `import { Baton } from 'batonvm';
