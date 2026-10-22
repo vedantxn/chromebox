@@ -86,3 +86,21 @@ func TestWrongTokenIsRefused(t *testing.T) {
 		t.Fatal("a wrong token got memory")
 	}
 }
+
+// Serving from a file (pread) must produce exactly what serving from memory does.
+func TestWriteRunsFromMatchesWriteRuns(t *testing.T) {
+	mem := make([]byte, 3*chunk+5*pageSize)
+	rng := rand.New(rand.NewSource(2))
+	rng.Read(mem[chunk-pageSize : chunk+2*pageSize])
+	rng.Read(mem[3*chunk+pageSize : 3*chunk+3*pageSize])
+	var a, b bytes.Buffer
+	if err := WriteRuns(&a, mem, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRunsFrom(&b, bytes.NewReader(mem), int64(len(mem)), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a.Bytes(), b.Bytes()) {
+		t.Fatal("WriteRunsFrom differs from WriteRuns")
+	}
+}

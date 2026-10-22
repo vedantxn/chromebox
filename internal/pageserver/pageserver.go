@@ -169,10 +169,45 @@ func (s *Server) stream(c net.Conn) error {
 // bytes, so the reader can map or skip those pages without them travelling.
 // Then (0, 0) to say that was all. sent is told each non-zero run's size.
 func WriteRuns(w io.Writer, mem []byte, sent func(int)) error {
-	var hdr [12]byte
 	for base := 0; base < len(mem); base += chunk {
-		end := min(base+chunk, len(mem))
-		for i := base; i < end; {
+		if err := writeChunk(w, mem[base:min(base+chunk, len(mem))], base, sent); err != nil {
+			return err
+		}
+	}
+	return writeEnd(w)
+}
+
+// WriteRunsFrom is WriteRuns for a file read with pread, chunk by chunk.
+// Reading a hole in a tmpfs file through a shared mapping allocates a page
+// for it; pread returns zeros without allocating, so a sparse image stays
+// sparse while it is served (M6: an image mapped to serve a pull grew from
+// 615 MiB back to 1.1 GiB).
+func WriteRunsFrom(w io.Writer, r io.ReaderAt, size int64, sent func(int)) error {
+	buf := make([]byte, chunk)
+	for base := int64(0); base < size; base += chunk {
+		n := min(chunk, size-base)
+		if _, err := r.ReadAt(buf[:n], base); err != nil && err != io.EOF {
+			return err
+		}
+		if err := writeChunk(w, buf[:n], int(base), sent); err != nil {
+			return err
+		}
+	}
+	return writeEnd(w)
+}
+
+func writeEnd(w io.Writer) error {
+	var hdr [12]byte
+	_, err := w.Write(hdr[:])
+	return err
+}
+
+// writeChunk writes the runs in mem, which starts at offset base.
+func writeChunk(w io.Writer, mem []byte, base int, sent func(int)) error {
+	var hdr [12]byte
+	{
+		end := len(mem)
+		for i := 0; i < end; {
 			zero := isZero(mem[i : i+pageSize])
 			j := i + pageSize
 			for j < end && isZero(mem[j:j+pageSize]) == zero {
@@ -182,7 +217,7 @@ func WriteRuns(w io.Writer, mem []byte, sent func(int)) error {
 			if zero {
 				n |= zeroRun
 			}
-			binary.LittleEndian.PutUint64(hdr[0:], uint64(i))
+			binary.LittleEndian.PutUint64(hdr[0:], uint64(base+i))
 			binary.LittleEndian.PutUint32(hdr[8:], n)
 			if _, err := w.Write(hdr[:]); err != nil {
 				return err
@@ -198,9 +233,7 @@ func WriteRuns(w io.Writer, mem []byte, sent func(int)) error {
 			i = j
 		}
 	}
-	clear(hdr[:])
-	_, err := w.Write(hdr[:])
-	return err
+	return nil
 }
 
 // The hello is the token (length-prefixed) and one byte naming the connection.

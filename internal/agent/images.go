@@ -11,8 +11,6 @@ import (
 	"os"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/vedantxn/chromebox/internal/api"
 	"github.com/vedantxn/chromebox/internal/base"
 	"github.com/vedantxn/chromebox/internal/blockdiff"
@@ -91,14 +89,15 @@ func diskDelta(to, from string) ([]blockdiff.Range, error) {
 
 func (a *Agent) serveMemory(w http.ResponseWriter, r *http.Request) {
 	_, mem, _ := base.ImageFiles(r.PathValue("name"))
-	m, err := mapFile(mem)
+	f, err := os.Open(mem)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	defer unix.Munmap(m)
+	defer f.Close()
+	st, _ := f.Stat()
 	bw := bufio.NewWriterSize(w, 1<<20)
-	if err := pageserver.WriteRuns(bw, m, nil); err == nil {
+	if err := pageserver.WriteRunsFrom(bw, f, st.Size(), nil); err == nil {
 		_ = bw.Flush()
 	}
 }
