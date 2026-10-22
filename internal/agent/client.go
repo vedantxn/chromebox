@@ -32,6 +32,21 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		}
 		body = bytes.NewReader(b)
 	}
+	return c.doBody(ctx, method, path, body, out)
+}
+
+// PutState hands the target the snapshot's small files (device state, network
+// index, image and base names), by name.
+func (c *Client) PutState(ctx context.Context, id string, files map[string][]byte) error {
+	return c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/state", files, nil)
+}
+
+// PutDelta streams the disk delta (blockdiff format) into the target's copy.
+func (c *Client) PutDelta(ctx context.Context, id string, delta io.Reader) error {
+	return c.doBody(ctx, http.MethodPost, "/v1/vms/"+id+"/delta", delta, nil)
+}
+
+func (c *Client) doBody(ctx context.Context, method, path string, body io.Reader, out any) error {
 	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, body)
 	if err != nil {
 		return err
@@ -78,14 +93,18 @@ func (c *Client) Incoming(ctx context.Context, req api.IncomingRequest) error {
 	return c.do(ctx, http.MethodPost, "/v1/incoming", req, nil)
 }
 
-func (c *Client) Accept(ctx context.Context, id string) (api.CreateVMResponse, error) {
+func (c *Client) Accept(ctx context.Context, id string, req api.AcceptRequest) (api.CreateVMResponse, error) {
 	var out api.CreateVMResponse
-	err := c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/accept", nil, &out)
+	err := c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/accept", req, &out)
 	return out, err
 }
 
-func (c *Client) Commit(ctx context.Context, id string) error {
-	return c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/commit", nil, nil)
+// Commit retires the source copy. After a post-copy migration it returns only
+// once the target holds every page.
+func (c *Client) Commit(ctx context.Context, id string) (api.CommitResponse, error) {
+	var out api.CommitResponse
+	err := c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/commit", nil, &out)
+	return out, err
 }
 
 func (c *Client) Abort(ctx context.Context, id string) error {

@@ -152,6 +152,27 @@ func CopyRange(fd int, dst uint64, data []byte, pageSize uint64) error {
 	return nil
 }
 
+// ZeroRange maps zero pages over [dst, dst+n), skipping pages already there.
+func ZeroRange(fd int, dst, n, pageSize uint64) error {
+	for off := uint64(0); off < n; {
+		a := uffdZeropage{Range: uffdRange{dst + off, n - off}}
+		err := ioctl(fd, ioctlZeropage, unsafe.Pointer(&a))
+		if a.Zeroed > 0 {
+			off += uint64(a.Zeroed)
+		}
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, unix.EEXIST):
+			off += pageSize
+		case errors.Is(err, unix.EAGAIN):
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
 // Event is one page fault: the address the guest touched.
 type Event struct {
 	Addr uint64

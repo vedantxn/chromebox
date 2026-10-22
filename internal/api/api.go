@@ -87,6 +87,25 @@ type Node struct {
 type MigrateRequest struct {
 	TargetAgent string `json:"target_agent"` // the target agent's URL
 	TargetSSH   string `json:"target_ssh"`   // ssh target for the bulk data, e.g. ec2-user@10.0.0.5
+	// StopAndCopy sends all memory during the pause (M2–M4), instead of
+	// post-copy; kept to measure one against the other.
+	StopAndCopy bool `json:"stop_and_copy,omitempty"`
+	FaultKiB    int  `json:"fault_kib,omitempty"` // post-copy: bytes one fault fetches, in KiB (default 64)
+}
+
+// AcceptRequest tells the target how to get the memory it was not sent: from
+// the source's page server (post-copy). Empty means the memory came with the
+// snapshot.
+type AcceptRequest struct {
+	Source   string `json:"source,omitempty"` // host:port of the page server
+	Token    string `json:"token,omitempty"`
+	FaultKiB int    `json:"fault_kib,omitempty"`
+}
+
+// CommitResponse: what the source sent after the VM resumed on the target.
+type CommitResponse struct {
+	StreamMs  float64 `json:"stream_ms"` // target resumed -> it holds every page
+	StreamMiB float64 `json:"stream_mib"`
 }
 
 // MigrateResponse: the VM now runs on the target and is paused on the source,
@@ -96,6 +115,7 @@ type MigrateResponse struct {
 	TargetLaps timing.Record `json:"target_laps"`
 	PausedMs   float64       `json:"paused_ms"` // source paused -> running on the target
 	DeltaBytes int64         `json:"delta_bytes"`
+	PostCopy   bool          `json:"post_copy"`
 }
 
 // IncomingRequest tells a target agent to get ready for a VM.

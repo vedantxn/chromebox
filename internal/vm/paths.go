@@ -30,6 +30,11 @@ func (p Paths) PIDFile() string   { return filepath.Join(p.Dir, "fc.pid") }
 func (p Paths) SerialLog() string { return filepath.Join(p.Dir, "serial.log") }
 func (p Paths) Rootfs() string    { return filepath.Join(p.Dir, "rootfs.ext4") }
 
+// DiskRef is a reflink clone of the disk taken while the VM still runs, just
+// before a migration: its changes against the base travel before the pause,
+// and only the blocks written after it travel during the pause.
+func (p Paths) DiskRef() string { return filepath.Join(p.Dir, "ref.ext4") }
+
 // VsockSock is the Unix socket through which the host reaches the guest's
 // vsock ports (see package guestctl).
 func (p Paths) VsockSock() string { return filepath.Join(p.Dir, "v.sock") }

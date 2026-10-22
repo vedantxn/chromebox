@@ -140,7 +140,7 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 
 	// Memory and the disk delta are independent, so send them at the same time
 	// over the shared connection; the slower one sets the pace.
-	deltaBytes, err := CopyState(ctx, r, p, ref)
+	deltaBytes, err := CopyState(ctx, r, p, ref, true)
 	if err != nil {
 		return nil, err
 	}
@@ -208,11 +208,15 @@ func Run(ctx context.Context, p vm.Paths, host string) (res *Result, err error) 
 // --sparse writes the runs of zeros as holes, so they cost nothing to send or
 // store (a fresh Chrome guest's memory is about 40% all-zero pages). No
 // compression: it costs more CPU time than the network takes to move bytes.
-func copyMemory(ctx context.Context, r *remote.Remote, p vm.Paths) error {
+func copyMemory(ctx context.Context, r *remote.Remote, p vm.Paths, withMemory bool) error {
 	// Relative to /, so both directories fit in one stream and land at the
 	// same absolute paths on the target.
-	send := exec.CommandContext(ctx, "tar", "-C", "/", "--sparse", "--exclude=rootfs.ext4", "-cf", "-",
-		strings.TrimPrefix(p.SnapDir(), "/"), strings.TrimPrefix(p.MemDir(), "/"))
+	args := []string{"-C", "/", "--sparse", "--exclude=rootfs.ext4"}
+	if !withMemory {
+		args = append(args, "--exclude=mem") // post-copy: the memory follows later
+	}
+	args = append(args, "-cf", "-", strings.TrimPrefix(p.SnapDir(), "/"), strings.TrimPrefix(p.MemDir(), "/"))
+	send := exec.CommandContext(ctx, "tar", args...)
 	recv := r.Command(ctx, "tar", "-C", "/", "-xf", "-")
 
 	pipe, err := send.StdoutPipe()
@@ -240,15 +244,15 @@ func copyMemory(ctx context.Context, r *remote.Remote, p vm.Paths) error {
 	return nil
 }
 
-// CopyState sends the snapshot's memory and the disk delta against ref
-// concurrently, and returns the size of the delta. The target must already
-// hold a copy of ref at p.SnapRootfs().
-func CopyState(ctx context.Context, r *remote.Remote, p vm.Paths, ref string) (int64, error) {
+// CopyState sends the snapshot (device state, and the memory if withMemory)
+// and the disk delta against ref concurrently, and returns the size of the
+// delta. The target must already hold a copy of ref at p.SnapRootfs().
+func CopyState(ctx context.Context, r *remote.Remote, p vm.Paths, ref string, withMemory bool) (int64, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 2)
 	var delta int64
-	go func() { errc <- copyMemory(ctx, r, p) }()
+	go func() { errc <- copyMemory(ctx, r, p, withMemory) }()
 	go func() {
 		var err error
 		delta, err = sendDelta(ctx, r, p, ref)

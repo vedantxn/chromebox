@@ -20,10 +20,13 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/vedantxn/chromebox/internal/api"
 	"github.com/vedantxn/chromebox/internal/base"
 	"github.com/vedantxn/chromebox/internal/firecracker"
 	"github.com/vedantxn/chromebox/internal/migrate"
+	"github.com/vedantxn/chromebox/internal/pageserver"
 	"github.com/vedantxn/chromebox/internal/remote"
 	"github.com/vedantxn/chromebox/internal/timing"
 	"github.com/vedantxn/chromebox/internal/vm"
@@ -45,9 +48,20 @@ type Config struct {
 type Agent struct {
 	cfg    Config
 	loadMu sync.Mutex // one base load at a time
+
+	outMu    sync.Mutex
+	outgoing map[string]*outgoing // post-copy migrations still serving memory
 }
 
-func New(cfg Config) *Agent { return &Agent{cfg: cfg} }
+// outgoing is a VM that runs on another node but whose memory is still here:
+// the page server answers the target until it holds every page.
+type outgoing struct {
+	ps      *pageserver.Server
+	mem     []byte // the snapshot's memory file, mapped
+	resumed time.Time
+}
+
+func New(cfg Config) *Agent { return &Agent{cfg: cfg, outgoing: map[string]*outgoing{}} }
 
 // Run serves until ctx ends, sending a heartbeat every second.
 func (a *Agent) Run(ctx context.Context) error {
@@ -78,6 +92,8 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{id}/abort", a.abort)
 	mux.HandleFunc("POST /v1/incoming", a.incoming)
 	mux.HandleFunc("POST /v1/vms/{id}/accept", a.accept)
+	mux.HandleFunc("POST /v1/vms/{id}/state", a.putState)
+	mux.HandleFunc("POST /v1/vms/{id}/delta", a.putDelta)
 	return a.auth(mux)
 }
 
@@ -124,6 +140,11 @@ func (a *Agent) deleteVM(w http.ResponseWriter, r *http.Request) {
 // the target and paused here; the orchestrator then moves the route and says
 // commit or abort. No disk pre-copy: the target clones the base disk it already
 // holds, and only the blocks this VM wrote since it was cloned travel.
+//
+// Post-copy (the default since M5): the pause sends only the device state and
+// the disk delta, the target resumes at once, and the memory follows from a
+// page server here, on demand and in a background stream. Stop-and-copy sends
+// all the memory during the pause, as M2–M4 did.
 func (a *Agent) migrateOut(w http.ResponseWriter, r *http.Request) {
 	var req api.MigrateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TargetAgent == "" || req.TargetSSH == "" {
@@ -138,6 +159,7 @@ func (a *Agent) migrateOut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no running VM made from a base: "+id, http.StatusNotFound)
 		return
 	}
+	postCopy := !req.StopAndCopy
 	ctx := r.Context()
 	target := NewClient(req.TargetAgent, a.cfg.Token)
 	rem := remote.New(req.TargetSSH)
@@ -147,10 +169,35 @@ func (a *Agent) migrateOut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	if _, err := rem.Run(ctx, "true"); err != nil { // open the shared ssh connection before the pause
-		_ = target.DeleteVM(context.Background(), id)
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
+	if !postCopy { // stop-and-copy sends the memory through ssh
+		if _, err := rem.Run(ctx, "true"); err != nil { // open the shared ssh connection before the pause
+			_ = target.DeleteVM(context.Background(), id)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+	var ps *pageserver.Server
+	var mem []byte
+	accept := api.AcceptRequest{}
+	if postCopy {
+		var err error
+		if ps, err = a.preparePostCopy(p, req.TargetAgent); err != nil {
+			_ = target.DeleteVM(context.Background(), id)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Send the disk's changes so far while the VM still runs; the pause
+		// then only sends what changed since this reference.
+		if _, err := pushDelta(ctx, target, id, p, base.Disk(baseName), p.DiskRef(), true); err != nil {
+			_ = ps.Close()
+			_ = target.DeleteVM(context.Background(), id)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		accept = api.AcceptRequest{Source: ps.Addr(), Token: ps.Token(), FaultKiB: req.FaultKiB}
+		if accept.FaultKiB == 0 { // the node's default, for experiments
+			accept.FaultKiB, _ = strconv.Atoi(os.Getenv("CHROMEBOX_FAULT_KIB"))
+		}
 	}
 	sw.Lap("target prepared")
 
@@ -159,37 +206,129 @@ func (a *Agent) migrateOut(w http.ResponseWriter, r *http.Request) {
 	fail := func(code int, err error) {
 		_ = c.ResumeVM(context.Background())
 		_ = target.DeleteVM(context.Background(), id)
+		if ps != nil {
+			_ = ps.Close()
+		}
+		if mem != nil {
+			_ = unix.Munmap(mem)
+		}
 		http.Error(w, "migration rolled back, source resumed: "+err.Error(), code)
 	}
 	if err := vm.Snapshot(ctx, c, p, vm.SnapshotOptions{Sync: false}, sw); err != nil {
 		fail(http.StatusInternalServerError, err)
 		return
 	}
-	delta, err := migrate.CopyState(ctx, rem, p, base.Disk(baseName))
+	if postCopy {
+		var err error
+		if mem, err = mapFile(p.Mem()); err != nil {
+			fail(http.StatusInternalServerError, err)
+			return
+		}
+		ps.Start(mem)
+	}
+	var delta int64
+	var err error
+	if postCopy {
+		delta, err = pushState(ctx, target, id, p, p.DiskRef())
+	} else {
+		delta, err = migrate.CopyState(ctx, rem, p, base.Disk(baseName), true)
+	}
 	if err != nil {
 		fail(http.StatusBadGateway, err)
 		return
 	}
-	sw.Lap("memory + disk delta sent")
-	tr, err := target.Accept(ctx, id)
+	if postCopy {
+		sw.Lap("device state + disk delta sent")
+	} else {
+		sw.Lap("memory + disk delta sent")
+	}
+	tr, err := target.Accept(ctx, id, accept)
 	if err != nil {
 		fail(http.StatusBadGateway, err)
 		return
 	}
 	sw.Lap("running on target")
-	_ = os.RemoveAll(p.MemDir())
+	var laps bytes.Buffer
+	sw.Print(&laps)
+	log.Printf("migrate %s (post-copy %v):\n%starget:\n%s", id, postCopy, laps.String(), fmtLaps(tr.Laps))
+	if postCopy {
+		a.outMu.Lock()
+		a.outgoing[id] = &outgoing{ps: ps, mem: mem, resumed: time.Now()}
+		a.outMu.Unlock()
+	} else {
+		_ = os.RemoveAll(p.MemDir())
+	}
 	writeJSON(w, http.StatusOK, api.MigrateResponse{Laps: sw.Record(), TargetLaps: tr.Laps,
-		PausedMs: float64(time.Since(paused).Microseconds()) / 1000, DeltaBytes: delta})
+		PausedMs: float64(time.Since(paused).Microseconds()) / 1000, DeltaBytes: delta, PostCopy: postCopy})
 }
 
-// commit ends a migration on the source: the VM now lives elsewhere.
+// preparePostCopy does, before the pause, what need not happen during it:
+//   - reserve the page server's port on the address the target will reach;
+//   - allocate the memory file in RAM, so that during the pause Firecracker
+//     only copies into it (allocating and zeroing those pages took about half
+//     of the 334 ms snapshot write in C1).
+func (a *Agent) preparePostCopy(p vm.Paths, targetAgent string) (*pageserver.Server, error) {
+	local, targetIP, err := routeTo(targetAgent)
+	if err != nil {
+		return nil, err
+	}
+	ps, err := pageserver.Listen(local, randomToken(), targetIP)
+	if err != nil {
+		return nil, err
+	}
+	_, img, err := vm.ImageOf(p)
+	if err == nil {
+		err = os.MkdirAll(p.MemDir(), 0o755)
+	}
+	if err == nil {
+		err = preallocate(p.Mem(), int64(img.MemMiB)<<20)
+	}
+	if err != nil {
+		_ = ps.Close()
+		return nil, err
+	}
+	return ps, nil
+}
+
+// commit ends a migration on the source: the VM now lives elsewhere. After
+// post-copy the memory here is still the only copy of the pages the target has
+// not received, so it waits until the target says it holds them all.
 func (a *Agent) commit(w http.ResponseWriter, r *http.Request) {
-	a.destroy(vm.PathsFor(r.PathValue("id")))
-	w.WriteHeader(http.StatusNoContent)
+	id := r.PathValue("id")
+	var res api.CommitResponse
+	a.outMu.Lock()
+	out := a.outgoing[id]
+	a.outMu.Unlock()
+	var err error
+	if out != nil {
+		err = out.ps.Wait(60 * time.Second)
+		res = api.CommitResponse{StreamMs: float64(time.Since(out.resumed).Microseconds()) / 1000,
+			StreamMiB: float64(out.ps.Sent()) / (1 << 20)}
+		_ = out.ps.Close()
+		_ = unix.Munmap(out.mem)
+	}
+	a.destroy(vm.PathsFor(id))
+	// Only now stop hiding it from heartbeats: until destroy, the paused copy
+	// still runs here, and reporting it would get it fenced mid-stream.
+	a.outMu.Lock()
+	delete(a.outgoing, id)
+	a.outMu.Unlock()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusGatewayTimeout)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // abort ends a failed migration on the source: resume the paused VM.
 func (a *Agent) abort(w http.ResponseWriter, r *http.Request) {
+	a.outMu.Lock()
+	if out := a.outgoing[r.PathValue("id")]; out != nil {
+		_ = out.ps.Close()
+		_ = unix.Munmap(out.mem)
+		delete(a.outgoing, r.PathValue("id"))
+	}
+	a.outMu.Unlock()
 	if err := firecracker.New(vm.PathsFor(r.PathValue("id")).Socket()).ResumeVM(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -222,6 +361,13 @@ func (a *Agent) incoming(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// The TAP and the Firecracker process don't depend on the snapshot: make
+	// them now, so the source's pause doesn't wait for them (~190 ms in C2).
+	if err := vm.PrepareRestore(r.Context(), p, req.NetIndex); err != nil {
+		a.destroy(p)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -229,16 +375,31 @@ func (a *Agent) incoming(w http.ResponseWriter, r *http.Request) {
 // browser answers.
 func (a *Agent) accept(w http.ResponseWriter, r *http.Request) {
 	p := vm.PathsFor(r.PathValue("id"))
+	var req api.AcceptRequest
+	_ = json.NewDecoder(r.Body).Decode(&req) // empty: the memory came with the snapshot
+	var uffdArgs []string
+	if req.Source != "" {
+		uffdArgs = []string{"source=" + req.Source, "token=" + req.Token}
+		if req.FaultKiB > 0 {
+			uffdArgs = append(uffdArgs, "fault_kib="+strconv.Itoa(req.FaultKiB))
+		}
+	}
+	id, began := r.PathValue("id"), time.Now()
 	sw := timing.Start()
-	if _, err := vm.Restore(r.Context(), p, sw); err != nil {
+	if _, err := vm.LoadPrepared(r.Context(), p, sw, uffdArgs...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if _, err := vm.WaitRestored(r.Context(), p, 0, 15*time.Second); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	sw.Lap("browser answering")
+	// The VM runs. Answer now, so the route moves while the browser warms up
+	// (with post-copy, its first moments are page faults); its readiness is
+	// only logged. Waiting here added ~400 ms to the pause in C2.
+	go func() {
+		if _, err := vm.WaitRestored(context.Background(), p, 0, 15*time.Second); err != nil {
+			log.Printf("accept %s: browser did not answer after restore: %v", id, err)
+			return
+		}
+		log.Printf("accept %s: browser answering %.0f ms after the restore began", id, float64(time.Since(began).Microseconds())/1000)
+	}()
 	for _, f := range [][2]string{{p.SnapBase(), p.BaseFile()}, {p.SnapNet(), p.NetFile()}, {p.SnapImage(), p.ImageFile()}} {
 		if b, err := os.ReadFile(f[0]); err == nil {
 			_ = os.WriteFile(f[1], b, 0o644)
@@ -268,7 +429,19 @@ func (a *Agent) Status() api.Status {
 		reserve += b.MemMiB
 	}
 	st.CapMemMiB = memTotalMiB() - reserve
-	st.VMs = listVMs()
+	a.outMu.Lock()
+	moving := make(map[string]bool, len(a.outgoing))
+	for id := range a.outgoing {
+		moving[id] = true
+	}
+	a.outMu.Unlock()
+	for _, v := range listVMs() {
+		// A VM that moved away but whose memory is still being served is not
+		// this node's: reporting it would get it fenced mid-stream.
+		if !moving[v.ID] {
+			st.VMs = append(st.VMs, v)
+		}
+	}
 	return st
 }
 
@@ -404,4 +577,9 @@ func memCost(p vm.Paths) (pss, private float64) {
 		}
 	}
 	return pss, float64(priv) / 1024
+}
+
+func fmtLaps(r timing.Record) string {
+	b, _ := json.Marshal(r)
+	return string(b)
 }

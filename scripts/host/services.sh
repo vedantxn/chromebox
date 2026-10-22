@@ -40,6 +40,10 @@ Description=chromebox orchestrator
 After=network-online.target
 [Service]
 User=ec2-user
+# Moving a VM's route is the one privileged thing it does. With the capability
+# it runs ip directly: sudo's first call in a service took ~300 ms, all of it
+# inside a migration's outage (m5.md).
+AmbientCapabilities=CAP_NET_ADMIN
 EnvironmentFile=/etc/chromebox/env
 ExecStart=/usr/local/bin/chromebox orchestrator :8080
 Restart=always

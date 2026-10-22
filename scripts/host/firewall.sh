@@ -34,6 +34,13 @@ table inet baton {
   }
   chain forward { type filter hook forward priority 0; policy accept;
     ct state established,related accept   # replies to connections the gateway opened (the CDP proxy)
+    # The connections of the proxy to Chrome (VM port 9223) outlive a migration,
+    # but connection tracking on this node does not move with them: on the new
+    # node a reply can look NEW (never seen) or INVALID (stale entry from an
+    # earlier stay, old sequence numbers), and was dropped (M5). Let packets of
+    # the bridge through unless they open a connection: without SYN they can
+    # only continue one the gateway started.
+    iifname "fc*" tcp sport 9223 tcp flags & syn == 0 accept
     iifname "fc*" ip daddr { 169.254.0.0/16, 172.16.0.0/12, 10.0.0.0/8, 192.168.0.0/16 } counter drop
   }
 }'

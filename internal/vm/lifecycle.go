@@ -153,30 +153,74 @@ func Snapshot(ctx context.Context, c *firecracker.Client, p Paths, o SnapshotOpt
 // guest's memory. Then a fresh Firecracker process loads the snapshot. It must
 // not be configured first: the snapshot already contains the configuration.
 func Restore(ctx context.Context, p Paths, sw *timing.Stopwatch) (*firecracker.Client, error) {
-	_ = Kill(p) // a missing pid file just means nothing is running
-	if err := clone(p.SnapRootfs(), p.Rootfs()); err != nil {
-		return nil, err
-	}
-	sw.Lap("disk restored")
-	// The restored guest expects its TAP to exist, with the same name and MAC.
 	nn, err := NetOf(p)
 	if err != nil {
 		return nil, err
 	}
+	n := -1
 	if nn != nil {
-		if err := nn.EnsureTap(os.Getuid(), os.Getgid()); err != nil {
-			return nil, err
-		}
-		sw.Lap("tap ready")
+		n = nn.Index
 	}
-	c, err := StartProcess(ctx, p)
-	if err != nil {
+	if err := PrepareRestore(ctx, p, n); err != nil {
 		return nil, err
 	}
-	sw.Lap("firecracker API ready")
+	sw.Lap("tap + firecracker ready")
+	return LoadPrepared(ctx, p, sw)
+}
+
+// PrepareRestore does the part of a restore that does not need the snapshot:
+// the TAP for network index n (-1: no network) and an empty Firecracker
+// process, which waits holding the VM's disk path. A migration does this
+// before pausing the source, so the pause only pays for LoadPrepared.
+func PrepareRestore(ctx context.Context, p Paths, n int) error {
+	_ = Kill(p) // a missing pid file just means nothing is running
+	// The process binds the disk file when it starts, so it must exist; until
+	// LoadPrepared it is the base disk (incoming put that in the snapshot dir).
+	if _, err := os.Stat(p.Rootfs()); err != nil {
+		if err := clone(p.SnapRootfs(), p.Rootfs()); err != nil {
+			return err
+		}
+	}
+	if n >= 0 {
+		if err := os.WriteFile(p.NetFile(), []byte(strconv.Itoa(n)+"\n"), 0o644); err != nil {
+			return err
+		}
+		nn, err := netsetup.ForIndex(n)
+		if err != nil {
+			return err
+		}
+		if err := nn.EnsureTap(os.Getuid(), os.Getgid()); err != nil {
+			return err
+		}
+	}
+	_, err := StartProcess(ctx, p)
+	return err
+}
+
+// LoadPrepared finishes a restore in the process PrepareRestore started: the
+// disk is replaced by the snapshot's (cp rewrites the same file, so the
+// process's bind mount still points at it) and the snapshot is loaded.
+//
+// With uffdArgs, the memory is not in a file here: a page-fault handler
+// (`chromebox uffd <id> uffdArgs...`) serves it, e.g. from the node the VM
+// migrated from, and Firecracker resumes the VM before any of it has arrived.
+func LoadPrepared(ctx context.Context, p Paths, sw *timing.Stopwatch, uffdArgs ...string) (*firecracker.Client, error) {
+	if err := clone(p.SnapRootfs(), p.Rootfs()); err != nil {
+		return nil, err
+	}
+	sw.Lap("disk restored")
+	c := firecracker.New(p.Socket())
+	mem := firecracker.MemBackend{BackendType: "File", BackendPath: p.Mem()}
+	if len(uffdArgs) > 0 {
+		if err := StartUffd(p, uffdArgs...); err != nil {
+			return nil, err
+		}
+		mem = firecracker.MemBackend{BackendType: "Uffd", BackendPath: p.UffdSock()}
+		sw.Lap("uffd handler ready")
+	}
 	load := firecracker.SnapshotLoad{
 		SnapshotPath: p.Vmstate(),
-		MemBackend:   firecracker.MemBackend{BackendType: "File", BackendPath: p.Mem()},
+		MemBackend:   mem,
 		ResumeVM:     true,
 		// Off by default: see docs/learn/m2.md (C5) for why.
 		ClockRealtime: os.Getenv("CHROMEBOX_CLOCK_REALTIME") != "",

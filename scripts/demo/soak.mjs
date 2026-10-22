@@ -33,6 +33,7 @@ const marker = await page.evaluate(() => {
 log(`connected; page marker ${marker}; running ${seconds}s, one request every 100 ms`);
 
 const stalls = [];
+const gaps = []; // time between consecutive answers: ~100 ms sleep + one round trip, unless something stalled
 const errors = [];
 let samples = 0, lastTick = -1, backwards = 0, markerChanged = 0;
 let firstSkew = null, lastSkew = null; // lastSkew is also null before the first sample
@@ -47,6 +48,7 @@ while (Date.now() < end) {
     ]);
     const recv = performance.now();
     const gap = recv - prevRecv;
+    gaps.push(gap);
     if (gap > 2000) { // normal cycles take ~100 ms of sleep plus the round trip to the gateway
       stalls.push({ at: stamp(), ms: Math.round(gap) });
       log(`stall: no answer for ${Math.round(gap)} ms, then the page replied (tick ${r.tick})`);
@@ -74,6 +76,8 @@ const longest = stalls.reduce((m, s) => Math.max(m, s.ms), 0);
 console.log('\n--- what the agent saw ---');
 console.log(`requests answered       : ${samples}`);
 console.log(`longest stall           : ${longest} ms   (${stalls.length} stall(s) over 2 s)`);
+const sorted = [...gaps].sort((x, y) => x - y);
+console.log(`gap between answers    : median ${Math.round(sorted[sorted.length >> 1] ?? 0)} ms, longest ${Math.round(sorted.at(-1) ?? 0)} ms`);
 console.log(`connection closed events: ${disconnects}`);
 console.log(`failed requests         : ${errors.length}`);
 console.log(`page counter went back  : ${backwards} time(s); marker changed: ${markerChanged} time(s)`);

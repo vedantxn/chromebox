@@ -22,7 +22,11 @@ type MigrationResult struct {
 	// UnreachableMs adds the route flip: paused -> the gateway sends packets to the target.
 	UnreachableMs float64 `json:"unreachable_ms"`
 	DeltaMiB      float64 `json:"delta_mib"`
-	Error         string  `json:"error,omitempty"`
+	// Post-copy: the VM ran on the target while its memory arrived, for StreamMs.
+	PostCopy  bool    `json:"post_copy"`
+	StreamMs  float64 `json:"stream_ms,omitempty"`
+	StreamMiB float64 `json:"stream_mib,omitempty"`
+	Error     string  `json:"error,omitempty"`
 }
 
 // Migrate moves VM id to target ("" lets the scheduler choose). Two phases:
@@ -76,36 +80,38 @@ func (o *Orchestrator) Migrate(ctx context.Context, id, target string) (Migratio
 	}
 	restore := func() { _ = o.store.SetState(id, StateRunning) }
 
-	start := time.Now()
 	mr, err := src.Migrate(ctx, id, api.MigrateRequest{TargetAgent: dst.URL, TargetSSH: "ec2-user@" + hostOf(dst.URL)})
 	if err != nil {
 		restore() // the source agent has already resumed the VM and cleaned the target
 		return res, err
 	}
 	// The VM runs on the target. Move the network, then retire the source.
+	answered := time.Now()
 	if err := o.setRoute(ctx, vm.NetIndex, target); err != nil {
 		_ = dst.DeleteVM(context.Background(), id)
 		_ = src.Abort(context.Background(), id)
 		restore()
 		return res, fmt.Errorf("route flip failed, migration aborted: %w", err)
 	}
-	unreachable := mr.PausedMs + float64(time.Since(start).Microseconds())/1000 - lapTotal(mr)
+	// From the source's pause to the route pointing at the target: the time no
+	// packet for the VM could be delivered. The pause as the source timed it,
+	// plus the route flip as timed here; never one machine's clock minus
+	// another's (a node that just started can be off by hundreds of ms).
+	unreachable := mr.PausedMs + float64(time.Since(answered).Microseconds())/1000
 	if err := o.store.SetNode(id, target); err != nil {
 		return res, err
 	}
 	restore()
-	if err := src.Commit(ctx, id); err != nil {
-		log.Printf("migrate %s: commit on %s failed (the source copy is paused and orphaned): %v", id, vm.Node, err)
+	cr, err := src.Commit(ctx, id)
+	if err != nil {
+		log.Printf("migrate %s: commit on %s failed: %v", id, vm.Node, err)
 	}
 	res.PausedMs, res.UnreachableMs = mr.PausedMs, unreachable
+	res.PostCopy, res.StreamMs, res.StreamMiB = mr.PostCopy, cr.StreamMs, cr.StreamMiB
 	o.store.countMigration(id)
 	res.DeltaMiB = float64(mr.DeltaBytes) / (1 << 20)
 	return res, nil
 }
-
-// lapTotal is the total time the source agent spent, so that the time after it
-// (the route flip) can be added to the pause.
-func lapTotal(mr api.MigrateResponse) float64 { return mr.Laps.TotalMs }
 
 // Drain empties a node: cordon it, then migrate each of its VMs to a node the
 // scheduler chooses, two at a time. A VM whose migration fails is retried once
