@@ -27,10 +27,11 @@ names=$(aws ec2 describe-instances --filters Name=tag:Project,Values=chromebox N
 for n in $names; do
   if [[ $n == gateway ]]; then
     echo "== gateway: orchestrator"
-    scripts/aws/nodes.sh ssh gateway "TOKEN=$token SECRET=$secret bash -s" <<'EOS'
+    public=$(aws cloudfront list-distributions --query "DistributionList.Items[?Comment=='baton'].DomainName | [0]" --output text)
+    scripts/aws/nodes.sh ssh gateway "TOKEN=$token SECRET=$secret PUBLIC=https://$public bash -s" <<'EOS'
 set -euo pipefail
 sudo mkdir -p /etc/chromebox /var/lib/chromebox && sudo chown ec2-user: /var/lib/chromebox   # the orchestrator's database lives here
-printf 'CHROMEBOX_TOKEN=%s\nCHROMEBOX_SESSION_SECRET=%s\nCHROMEBOX_STRATEGY=spread\nCHROMEBOX_MAX_VMS=5\n' "$TOKEN" "$SECRET" | sudo tee /etc/chromebox/env >/dev/null
+printf 'CHROMEBOX_TOKEN=%s\nCHROMEBOX_SESSION_SECRET=%s\nCHROMEBOX_STRATEGY=spread\nCHROMEBOX_MAX_VMS=5\nCHROMEBOX_PUBLIC_URL=%s\n' "$TOKEN" "$SECRET" "$PUBLIC" | sudo tee /etc/chromebox/env >/dev/null
 sudo chmod 600 /etc/chromebox/env
 sudo systemctl disable --now chromebox-gw >/dev/null 2>&1 || true   # replaced by chromebox-proxy
 sudo tee /etc/systemd/system/chromebox-orchestrator.service >/dev/null <<'U'

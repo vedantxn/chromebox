@@ -36,6 +36,7 @@ type Config struct {
 	ProxyAdmin       string        // the CDP proxy's local admin address, e.g. "http://127.0.0.1:9301"
 	SessionSecret    []byte        // signs session tokens the proxy checks
 	MaxVMs           int           // refuse creates beyond this many VMs (0: no cap)
+	PublicURL        string        // how clients reach the proxy, e.g. "https://xxxx.cloudfront.net"
 	Strategy         Strategy      // placement
 	HeartbeatTimeout time.Duration // a node silent for longer is down
 }
@@ -72,6 +73,9 @@ func New(cfg Config) (*Orchestrator, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := st.accountSchema(); err != nil {
+		return nil, err
+	}
 	o := &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}, started: time.Now()}
 	return o, nil
 }
@@ -102,6 +106,7 @@ func (o *Orchestrator) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/nodes", o.listNodes)
 	mux.HandleFunc("POST /v1/vms/{id}/migrate", o.migrateVM)
 	mux.HandleFunc("POST /v1/vms/{id}/token", o.issueToken)
+	o.accountRoutes(mux)
 	mux.HandleFunc("POST /v1/nodes/{name}/drain", o.drainNode)
 	mux.HandleFunc("POST /v1/nodes/{name}/cordon", func(w http.ResponseWriter, r *http.Request) { o.cordon(w, r, true) })
 	mux.HandleFunc("POST /v1/nodes/{name}/uncordon", func(w http.ResponseWriter, r *http.Request) { o.cordon(w, r, false) })
@@ -200,7 +205,9 @@ func (o *Orchestrator) baseMem(name string) (int, bool) {
 // Create places a new VM, starts it from the base snapshot, and routes the
 // gateway to it. The VM takes its place (a database row with its memory) before
 // the slow part begins, so concurrent creates see each other.
-func (o *Orchestrator) Create(ctx context.Context, baseName string, ttl time.Duration) (api.VM, api.CreateVMResponse, error) {
+// Create's onReserve, if set, runs right after the VM's row is written and
+// before the VM starts (an account's session record is written there).
+func (o *Orchestrator) Create(ctx context.Context, baseName string, ttl time.Duration, onReserve ...func(id string) error) (api.VM, api.CreateVMResponse, error) {
 	sw := timing.Start()
 	mem, ok := o.baseMem(baseName)
 	if !ok {
@@ -224,6 +231,11 @@ func (o *Orchestrator) Create(ctx context.Context, baseName string, ttl time.Dur
 		return api.VM{}, api.CreateVMResponse{}, err
 	}
 	vm, err := o.store.InsertVM(newID(), node, baseName, mem, time.Now().Add(ttl))
+	if err == nil && len(onReserve) > 0 {
+		if err = onReserve[0](vm.ID); err != nil {
+			_ = o.store.DeleteVM(vm.ID)
+		}
+	}
 	o.place.Unlock()
 	if err != nil {
 		return api.VM{}, api.CreateVMResponse{}, err
@@ -235,6 +247,7 @@ func (o *Orchestrator) Create(ctx context.Context, baseName string, ttl time.Dur
 			_ = ag.DeleteVM(context.Background(), vm.ID)
 		}
 		_ = o.store.DeleteVM(vm.ID)
+		o.store.endSessionRecord(vm.ID, "failed to start")
 		return api.VM{}, api.CreateVMResponse{}, err
 	}
 	ag, err := o.agentFor(node)
@@ -292,6 +305,7 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 			return err // the node is up and refused: keep the record so it can be retried
 		}
 	}
+	o.store.endSessionRecord(id, "ended")
 	return o.store.DeleteVM(id)
 }
 

@@ -45,6 +45,7 @@ func (o *Orchestrator) expire(ctx context.Context) {
 	for _, v := range vms {
 		if e := v.ExpiresAt(); v.State == StateRunning && !e.IsZero() && time.Now().After(e) {
 			log.Printf("%s reached its lifetime, deleting", v.ID)
+			o.store.endSessionRecord(v.ID, "lifetime reached")
 			if err := o.Delete(ctx, v.ID); err != nil {
 				log.Printf("expire %s: %v", v.ID, err)
 			}
@@ -66,6 +67,7 @@ func (o *Orchestrator) markLost(ctx context.Context) {
 			continue
 		}
 		_ = o.store.SetState(v.ID, StateLost)
+		o.store.endSessionRecord(v.ID, "node lost")
 		o.delRoute(ctx, v.NetIndex)
 		n := o.closeConns(v.NetIndex)
 		log.Printf("node %s is down: %s lost, %d client connection(s) closed", v.Node, v.ID, n)

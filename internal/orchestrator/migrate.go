@@ -98,6 +98,7 @@ func (o *Orchestrator) Migrate(ctx context.Context, id, target string) (Migratio
 		log.Printf("migrate %s: commit on %s failed (the source copy is paused and orphaned): %v", id, vm.Node, err)
 	}
 	res.PausedMs, res.UnreachableMs = mr.PausedMs, unreachable
+	o.store.countMigration(id)
 	res.DeltaMiB = float64(mr.DeltaBytes) / (1 << 20)
 	return res, nil
 }

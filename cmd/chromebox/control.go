@@ -51,7 +51,8 @@ func runOrchestrator(listen string) error {
 		Token: os.Getenv("CHROMEBOX_TOKEN"), DBPath: "/var/lib/chromebox/orchestrator.db",
 		APIListen: listen, ProxyAdmin: "http://127.0.0.1:9301",
 		SessionSecret: []byte(os.Getenv("CHROMEBOX_SESSION_SECRET")), MaxVMs: maxVMs,
-		Strategy: orchestrator.Strategy(os.Getenv("CHROMEBOX_STRATEGY")),
+		PublicURL: os.Getenv("CHROMEBOX_PUBLIC_URL"),
+		Strategy:  orchestrator.Strategy(os.Getenv("CHROMEBOX_STRATEGY")),
 	})
 	if err != nil {
 		return err
