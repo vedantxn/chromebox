@@ -266,7 +266,7 @@ func (a *Agent) migrateOut(w http.ResponseWriter, r *http.Request) {
 			}()
 		}
 	} else {
-		_ = os.RemoveAll(p.MemDir())
+		vm.ClearMemDir(p) // the source may still resume (abort): keep its directory
 	}
 	writeJSON(w, http.StatusOK, api.MigrateResponse{Laps: sw.Record(), TargetLaps: tr.Laps,
 		PausedMs: float64(time.Since(paused).Microseconds()) / 1000, DeltaBytes: delta, PostCopy: postCopy})
@@ -362,7 +362,8 @@ func (a *Agent) incoming(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "need id and base", http.StatusBadRequest)
 		return
 	}
-	if _, err := base.Read(req.Base); err != nil {
+	m, err := base.Read(req.Base)
+	if err != nil {
 		http.Error(w, "this node does not hold base "+req.Base, http.StatusConflict)
 		return
 	}
@@ -375,6 +376,12 @@ func (a *Agent) incoming(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := vm.CloneFile(base.Disk(req.Base), p.SnapRootfs()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// The image name gives the jailed process its memory limit before the
+	// snapshot (which carries it too) has arrived.
+	if err := os.WriteFile(p.ImageFile(), []byte(m.Image+"\n"), 0o644); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -422,7 +429,7 @@ func (a *Agent) accept(w http.ResponseWriter, r *http.Request) {
 			_ = os.WriteFile(f[1], b, 0o644)
 		}
 	}
-	_ = os.RemoveAll(p.MemDir()) // the VM has the memory mapped; unlinking frees it when the VM exits
+	vm.ClearMemDir(p) // the VM has the memory mapped; unlinking frees it when the VM exits
 	writeJSON(w, http.StatusOK, api.CreateVMResponse{Laps: sw.Record()})
 }
 

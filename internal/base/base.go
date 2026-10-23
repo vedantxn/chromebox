@@ -106,7 +106,11 @@ func Fork(ctx context.Context, c *firecracker.Client, p vm.Paths, name string, s
 			return 0, err
 		}
 	}
-	if err := vm.Preallocate(ShmMem(name), int64(img.MemMiB)<<20); err != nil {
+	// The parent is jailed: it can write only into its own directories. The
+	// snapshot goes into its memory dir, then is renamed into the image (same
+	// tmpfs, so the rename moves nothing).
+	tmpState, tmpMem := filepath.Join(p.MemDir(), "fork-vmstate"), filepath.Join(p.MemDir(), "fork-mem")
+	if err := vm.Preallocate(tmpMem, int64(img.MemMiB)<<20); err != nil {
 		return 0, err
 	}
 	sw.Lap("image prepared")
@@ -123,7 +127,7 @@ func Fork(ctx context.Context, c *firecracker.Client, p vm.Paths, name string, s
 	}
 	sw.Lap("paused")
 	nosync := false
-	err = c.CreateSnapshot(ctx, firecracker.SnapshotCreate{SnapshotPath: ShmState(name), MemFilePath: ShmMem(name),
+	err = c.CreateSnapshot(ctx, firecracker.SnapshotCreate{SnapshotPath: tmpState, MemFilePath: tmpMem,
 		SnapshotType: "Full", SyncSnapshotFiles: &nosync})
 	sw.Lap("snapshot written")
 	if err == nil {
@@ -133,7 +137,15 @@ func Fork(ctx context.Context, c *firecracker.Client, p vm.Paths, name string, s
 	if rerr := c.ResumeVM(context.Background()); err == nil {
 		err = rerr
 	}
+	if err == nil {
+		err = os.Rename(tmpState, ShmState(name))
+	}
+	if err == nil {
+		err = os.Rename(tmpMem, ShmMem(name))
+	}
 	if err != nil {
+		_ = os.Remove(tmpState)
+		_ = os.Remove(tmpMem)
 		_ = Delete(name)
 		return 0, err
 	}
@@ -344,7 +356,7 @@ func Clone(ctx context.Context, p vm.Paths, name string, netIndex int, sw *timin
 
 	tapDone := make(chan error, 1)
 	go func() { tapDone <- nn.EnsureTap(os.Getuid(), os.Getgid()) }()
-	c, err := vm.StartProcess(ctx, p)
+	c, err := vm.StartProcess(ctx, p, shm(name)) // the jailed VM sees its base read-only
 	if err != nil {
 		return err
 	}

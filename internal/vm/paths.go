@@ -2,7 +2,10 @@
 // process, and their lifecycle.
 package vm
 
-import "path/filepath"
+import (
+	"os"
+	"path/filepath"
+)
 
 // StateDir is identical on every node. A snapshot records the absolute paths
 // of the files the VM used, so a restore on another node needs the same paths.
@@ -73,3 +76,14 @@ func (p Paths) SnapNet() string    { return filepath.Join(p.SnapDir(), "net") }
 func (p Paths) SnapImage() string  { return filepath.Join(p.SnapDir(), "image") }
 func (p Paths) SnapBase() string   { return filepath.Join(p.SnapDir(), "base") }
 func (p Paths) SnapRootfs() string { return filepath.Join(p.SnapDir(), "rootfs.ext4") }
+
+// ClearMemDir removes the files in a running VM's memory directory but keeps
+// the directory: the VM's jail holds a bind mount of it, so a directory
+// deleted and made again would be a different one, invisible to the VM, and
+// its next snapshot would fail to open its file (found in the jailer pass).
+func ClearMemDir(p Paths) {
+	entries, _ := os.ReadDir(p.MemDir())
+	for _, e := range entries {
+		_ = os.RemoveAll(filepath.Join(p.MemDir(), e.Name()))
+	}
+}

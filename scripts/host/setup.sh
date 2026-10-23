@@ -45,3 +45,41 @@ echo "KERNEL==\"userfaultfd\", GROUP=\"$(id -gn)\", MODE=\"0660\"" | sudo tee /e
 sudo udevadm control --reload
 sudo udevadm trigger --name-match=userfaultfd
 echo "ok: $(ls -l /dev/userfaultfd)"
+
+# 5. The jailer (Firecracker's own sandbox launcher, same release as the VMM):
+# each VM runs chrooted to a jail holding only its own files, in its own PID
+# namespace and cgroup, as $USER. Jails live on XFS (/srv/jailer) so the copy
+# of the firecracker binary it makes per VM is cheap. VMs' cgroups go under
+# chromebox/, which hands them the cpu, memory and pids controllers.
+if [[ "$(jailer --version 2>/dev/null | head -1)" != "Jailer $FC_VERSION" ]]; then
+  tmp=$(mktemp -d)
+  base="https://github.com/firecracker-microvm/firecracker/releases/download/$FC_VERSION"
+  tgz="firecracker-$FC_VERSION-$ARCH.tgz"
+  curl -fsSL -o "$tmp/$tgz" "$base/$tgz"
+  curl -fsSL -o "$tmp/$tgz.sha256.txt" "$base/$tgz.sha256.txt"
+  (cd "$tmp" && sha256sum -c "$tgz.sha256.txt" >/dev/null)
+  tar -xzf "$tmp/$tgz" -C "$tmp"
+  sudo install -m 0755 "$tmp/release-$FC_VERSION-$ARCH/jailer-$FC_VERSION-$ARCH" /usr/local/bin/jailer
+  rm -rf "$tmp"
+fi
+sudo mkdir -p /srv/jailer
+# At every boot: the chromebox/ cgroup (cgroupfs keeps nothing across a
+# reboot), and cgroup2 remounted with favordynmods. Moving the jailer into a
+# VM's new cgroup waited ~34 ms for an RCU grace period without it, out of
+# ~50 ms for the whole jailer; with it the jailer takes ~20 ms.
+sudo tee /etc/systemd/system/chromebox-cgroup.service >/dev/null <<'U'
+[Unit]
+Description=chromebox: cgroup for the VMs
+DefaultDependencies=no
+After=sys-fs-cgroup.mount
+Before=chromebox-agent.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'mount -o remount,favordynmods /sys/fs/cgroup; mkdir -p /sys/fs/cgroup/chromebox; echo "+cpu +memory +pids" > /sys/fs/cgroup/chromebox/cgroup.subtree_control'
+[Install]
+WantedBy=multi-user.target
+U
+sudo systemctl daemon-reload
+sudo systemctl enable --now chromebox-cgroup.service >/dev/null 2>&1
+echo "ok: $(jailer --version | head -1); cgroup chromebox/ controllers: $(cat /sys/fs/cgroup/chromebox/cgroup.subtree_control); $(grep -o favordynmods /proc/mounts | head -1)"

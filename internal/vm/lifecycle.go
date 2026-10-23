@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/vedantxn/chromebox/internal/firecracker"
 	"github.com/vedantxn/chromebox/internal/netsetup"
@@ -113,6 +114,16 @@ func Snapshot(ctx context.Context, c *firecracker.Client, p Paths, o SnapshotOpt
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}
+	}
+	// Allocate the memory file before pausing, from this process: the pages
+	// are then charged to us, not to the VM's cgroup, whose memory.max (guest
+	// + 256 MiB) a 1 GiB snapshot written by Firecracker itself would exceed.
+	// It also keeps the allocation out of the pause (m5.md).
+	// Callers that prepared it already (a migration does, before the pause)
+	// are not charged again: fallocate on tmpfs walks every page even when
+	// all are there (~110 ms for 1 GiB).
+	if _, img, err := ImageOf(p); err == nil && allocated(p.Mem()) < int64(img.MemMiB)<<20 {
+		_ = Preallocate(p.Mem(), int64(img.MemMiB)<<20)
 	}
 	if err := c.PauseVM(ctx); err != nil {
 		return err
@@ -282,4 +293,13 @@ func BaseOf(p Paths) string {
 		}
 	}
 	return ""
+}
+
+// allocated is how many bytes of path really have memory or disk behind them.
+func allocated(path string) int64 {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0
+	}
+	return st.Blocks * 512
 }

@@ -82,6 +82,11 @@ User=ec2-user
 EnvironmentFile=/etc/chromebox/env
 ExecStart=/usr/local/bin/chromebox agent :7000
 Restart=always
+# A restart stops the agent only. By default systemd kills the whole control
+# group, which took the page-fault handlers of VMs still receiving their
+# memory after a post-copy migration with it: those VMs could never complete
+# and were killed. (Firecracker itself runs in the VM's own cgroup.)
+KillMode=process
 [Install]
 WantedBy=multi-user.target
 U

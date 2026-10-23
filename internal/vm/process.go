@@ -19,53 +19,82 @@ import (
 // DrivePath is where every Firecracker process sees its VM's disk. A snapshot
 // records the disk's path, so if each VM's disk lived at a different path,
 // concurrent clones of one snapshot would all open the same file. Instead each
-// process runs in its own mount namespace in which this one path is bound to
-// that VM's own disk file: the path baked into a snapshot is always valid, and
-// always means "my disk".
+// process sees, inside its own jail, this one path bound to that VM's own disk
+// file: the path baked into a snapshot is always valid, and always means "my
+// disk".
 const DrivePath = "/run/chromebox/drive/rootfs.ext4"
 
-// startScript runs as root inside a new mount namespace. It records its own
-// pid (which exec preserves, so the pid file names Firecracker itself), binds
-// the VM's disk onto DrivePath, then drops to the unprivileged user and becomes
-// Firecracker. Firecracker needs no privilege: /dev/kvm is open to all and the
-// TAP device is owned by the user.
-const startScript = `echo $$ > "$1"
-mount --bind "$2" "$3" || exit 1
-exec setpriv --reuid="$4" --regid="$5" --clear-groups --bounding-set=-all --inh-caps=-all -- /usr/local/bin/firecracker --api-sock "$6"`
+// JailBase is where the jailer makes each VM's chroot: <JailBase>/firecracker/<id>/root.
+const JailBase = "/srv/jailer"
 
-var driveMountReady bool
-
-// ensureDriveMountPoint creates the empty file DrivePath that disks get bound
-// onto. /run is tmpfs, so it is gone after a reboot and made again here.
-func ensureDriveMountPoint() error {
-	if driveMountReady {
-		return nil
-	}
-	if _, err := os.Stat(DrivePath); err != nil {
-		out, err := exec.Command("sudo", "sh", "-c",
-			"mkdir -p "+driveDir+" && touch "+DrivePath).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("create %s: %w: %s", DrivePath, err, out)
-		}
-	}
-	driveMountReady = true
-	return nil
+// jailRoot is the chroot of VM p.
+func jailRoot(p Paths) string {
+	return filepath.Join(JailBase, "firecracker", filepath.Base(p.Dir), "root")
 }
 
-const driveDir = "/run/chromebox/drive"
+// cgroupDir is VM p's cgroup (v2), made by the jailer under chromebox/.
+func cgroupDir(p Paths) string {
+	return filepath.Join("/sys/fs/cgroup/chromebox", filepath.Base(p.Dir))
+}
 
-// StartProcess launches a Firecracker process for the VM at p and waits until
+// startScript runs as root inside a new, private mount namespace, so nothing
+// it mounts is seen by the host. It builds the VM's jail: the VM's disk bound
+// onto DrivePath, and each directory the VM needs bound at the same absolute
+// path it has on the host (read-only where marked with a leading "ro:"), so
+// every path in the code and in existing snapshots stays valid inside. Then it
+// becomes Firecracker's jailer, which chroots there, makes the device nodes
+// (kvm, tun, urandom, userfaultfd), puts the VM in its own PID namespace and
+// cgroup, drops to the unprivileged user and execs Firecracker. The jailer's
+// own mount namespace inherits these binds.
+//
+//	$1 jail root  $2 disk  $3 n  $4..$(3+n) directories  then the jailer's arguments
+const startScript = `J="$1"; disk="$2"; n="$3"; shift 3
+mkdir -p "$J/run/chromebox/drive" && touch "$J/run/chromebox/drive/rootfs.ext4" || exit 1
+mount --bind "$disk" "$J/run/chromebox/drive/rootfs.ext4" || exit 1
+while [ "$n" -gt 0 ]; do
+  d="$1"; shift; n=$((n-1)); ro=
+  case "$d" in ro:*) ro=1; d=${d#ro:};; esac
+  mkdir -p "$J$d" && mount --bind "$d" "$J$d" || exit 1
+  [ -z "$ro" ] || mount -o remount,bind,ro "$J$d" || exit 1
+done
+exec jailer "$@"`
+
+// limits are the cgroup limits each VM gets. memory.max covers the guest plus
+// Firecracker itself; pids.max stops a runaway VMM. CPU is shared, not capped:
+// every VM's cgroup has the same cpu.weight, so under contention VMs get equal
+// shares of the node, whatever number of busy threads each has. A hard cap
+// (cpu.max) was the first default and was dropped: with a VM at its quota,
+// all its threads sleep until the next 100 ms period, Firecracker's included,
+// so a pause request waited for them and every migration and fork pause grew
+// by ~110 ms. CHROMEBOX_VM_CPU_MAX sets a cap (e.g. "100000 100000" for one
+// CPU) for the noisy-neighbour test or a paid tier.
+func limits(p Paths) []string {
+	out := []string{"pids.max=64"}
+	if v := os.Getenv("CHROMEBOX_VM_CPU_MAX"); v != "" {
+		out = append(out, "cpu.max="+v)
+	}
+	if _, img, err := ImageOf(p); err == nil {
+		out = append(out, fmt.Sprintf("memory.max=%d", int64(img.MemMiB+256)<<20))
+	}
+	return out
+}
+
+// StartProcess launches a jailed Firecracker for the VM at p and waits until
 // its API socket accepts connections. No VM exists yet at that point: the
 // process is an empty VMM waiting to be configured or to load a snapshot.
-func StartProcess(ctx context.Context, p Paths) (*firecracker.Client, error) {
-	if err := ensureDriveMountPoint(); err != nil {
-		return nil, err
-	}
+// readOnly lists further host directories the VM must see (read-only), such
+// as the base or fork image it is restored from; its own directories (p.Dir,
+// p.MemDir()) and the kernels are always there.
+func StartProcess(ctx context.Context, p Paths, readOnly ...string) (*firecracker.Client, error) {
 	// Files left by a dead process would make Firecracker fail to bind.
 	for _, f := range []string{p.Socket(), p.VsockSock(), p.PIDFile()} {
 		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
+	}
+	removeJail(p) // a jail left by a previous process of this VM
+	if err := os.MkdirAll(p.MemDir(), 0o755); err != nil {
+		return nil, err
 	}
 
 	// Firecracker's stdout is the guest's serial console, so the log holds
@@ -76,13 +105,24 @@ func StartProcess(ctx context.Context, p Paths) (*firecracker.Client, error) {
 	}
 	defer log.Close() // the child keeps its own copy of the descriptor
 
-	cmd := exec.Command("sudo", "unshare", "--mount", "--propagation", "private", "--",
-		"sh", "-c", startScript, "sh",
-		p.PIDFile(), p.Rootfs(), DrivePath,
-		strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()), p.Socket())
+	id := filepath.Base(p.Dir)
+	args := []string{"--id", id, "--exec-file", "/usr/local/bin/firecracker",
+		"--uid", strconv.Itoa(os.Getuid()), "--gid", strconv.Itoa(os.Getgid()),
+		"--chroot-base-dir", JailBase, "--new-pid-ns", "--cgroup-version", "2", "--parent-cgroup", "chromebox"}
+	for _, l := range limits(p) {
+		args = append(args, "--cgroup", l)
+	}
+	args = append(args, "--", "--api-sock", p.Socket())
+	dirs := []string{p.Dir, p.MemDir(), "ro:" + filepath.Dir(KernelPath)}
+	for _, d := range readOnly {
+		dirs = append(dirs, "ro:"+d)
+	}
+	argv := append([]string{"unshare", "--mount", "--propagation", "private", "--",
+		"sh", "-c", startScript, "sh", jailRoot(p), p.Rootfs(), strconv.Itoa(len(dirs))}, dirs...)
+	cmd := exec.Command("sudo", append(argv, args...)...)
 	cmd.Stdout, cmd.Stderr = log, log
-	// A new session detaches the VM from this CLI and from the SSH session
-	// that ran it, so the VM keeps running after both exit.
+	// A new session detaches the VM from this process and from any SSH
+	// session that ran it, so the VM keeps running after both exit.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start firecracker: %w", err)
@@ -92,7 +132,45 @@ func StartProcess(ctx context.Context, p Paths) (*firecracker.Client, error) {
 	if err := waitForSocket(ctx, p.Socket(), 3*time.Second); err != nil {
 		return nil, fmt.Errorf("%w (see %s)", err, p.SerialLog())
 	}
+	// In its own PID namespace Firecracker is PID 1; the jailer writes its
+	// host PID into the jail (whose root belongs to our user). Keep it where
+	// Kill and the agent look for it.
+	var b []byte
+	for i := 0; i < 50; i++ {
+		if b, err = os.ReadFile(filepath.Join(jailRoot(p), "firecracker.pid")); err == nil && len(b) > 0 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("firecracker pid: %w", err)
+	}
+	if err := os.WriteFile(p.PIDFile(), b, 0o644); err != nil {
+		return nil, err
+	}
 	return firecracker.New(p.Socket()), nil
+}
+
+// removeJail deletes VM p's jail directory and cgroup. The jail's bind mounts
+// lived only in the VM's private mount namespace, so with the process gone
+// the directory holds plain files (a copy of the binary, empty mount points);
+// --one-file-system makes sure nothing outside it could ever be reached.
+func removeJail(p Paths) {
+	if _, err := os.Stat(filepath.Dir(jailRoot(p))); err == nil {
+		_ = exec.Command("sudo", "rm", "-rf", "--one-file-system", filepath.Dir(jailRoot(p))).Run()
+	}
+	if _, err := os.Stat(cgroupDir(p)); err != nil {
+		return
+	}
+	for i := 0; i < 20; i++ { // the cgroup empties a moment after the process dies
+		if err := exec.Command("sudo", "rmdir", cgroupDir(p)).Run(); err == nil {
+			break
+		}
+		if _, err := os.Stat(cgroupDir(p)); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // waitForSocket polls until something accepts connections on path.
@@ -118,6 +196,7 @@ func waitForSocket(ctx context.Context, path string, timeout time.Duration) erro
 // failed migration doesn't leave one behind on the target.
 func Kill(p Paths) error {
 	err := killProcess(p)
+	removeJail(p)
 	if nn, nerr := NetOf(p); nerr == nil && nn != nil {
 		if derr := nn.DeleteTap(); derr != nil && err == nil {
 			err = derr
