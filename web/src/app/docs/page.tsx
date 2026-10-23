@@ -39,6 +39,7 @@ export default function Docs() {
     <main className="mx-auto max-w-3xl px-4 py-12">
       <Link href="/" className="text-sm text-amber-600 dark:text-amber-400">← Baton</Link>
       <h1 className="mt-3 text-2xl font-semibold">Quickstart</h1>
+      <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">How fast it is, measured: <Link href="/benchmarks" className="underline">benchmarks</Link>.</p>
       <ol className="mt-6 list-decimal space-y-8 pl-5">
         <li><Link href="/dashboard" className="underline">Sign in with GitHub</Link> and create an API key.</li>
         <li>Install the SDK and Playwright, and set your key:<Code>{install}</Code></li>

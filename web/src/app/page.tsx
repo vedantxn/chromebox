@@ -39,6 +39,9 @@ export default async function Home() {
         <Link href="/docs" className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium dark:border-zinc-700">
           Quickstart
         </Link>
+        <Link href="/benchmarks" className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium dark:border-zinc-700">
+          Benchmarks
+        </Link>
       </div>
       <pre className="mt-10 overflow-x-auto rounded-lg bg-zinc-100 p-4 text-[13px] leading-relaxed dark:bg-zinc-900">{quickstart}</pre>
       <ul className="mt-10 grid gap-4 text-sm sm:grid-cols-3">
