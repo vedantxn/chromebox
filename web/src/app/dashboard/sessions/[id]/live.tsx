@@ -2,7 +2,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 type Sess = { id: string; status: string; node?: string; expiresAt?: string; migrations: number; endReason?: string };
-type Move = { at: string; from?: string; to?: string; pausedMs?: number; unreachableMs?: number; streamMs?: number; streamMiB?: number; error?: string };
+type Ev = { at: string; kind: string; detail?: Record<string, number | string | boolean> };
+
+const n0 = (v: unknown) => (typeof v === 'number' ? v.toFixed(0) : '?');
+
+// One line (or two) per thing that happened to the session.
+function describe(e: Ev): { title: string; sub?: string; bad?: boolean } {
+  const d = e.detail ?? {};
+  switch (e.kind) {
+    case 'created': return { title: `started on ${d.node}`, sub: `${n0(d.create_ms)} ms from request to a browser that answers` };
+    case 'forked_from': return { title: `copy of ${d.parent}` };
+    case 'forked': return { title: `copied into ${d.copies} session${d.copies === 1 ? '' : 's'}`, sub: `this browser paused ${n0(d.paused_ms)} ms` };
+    case 'migrated': return { title: `${d.from} → ${d.to}`, sub: `paused ${n0(d.paused_ms)} ms · unreachable ${n0(d.unreachable_ms)} ms` +
+      (d.stream_ms ? ` · ${n0(d.stream_mib)} MiB of memory followed in ${n0(d.stream_ms)} ms while it ran` : '') };
+    case 'migration_failed': return { title: 'migration failed', sub: String(d.error), bad: true };
+    case 'paused': return { title: 'paused', sub: d.stored_mib ? `${n0(d.stored_mib)} MiB stored · browser stopped in ${n0(d.paused_ms)} ms` : undefined };
+    case 'resumed': return { title: `resumed on ${d.node}`, sub: d.resume_ms ? `${n0(d.resume_ms)} ms` : undefined };
+    case 'ended': return { title: `ended: ${d.reason}` };
+    default: return { title: e.kind };
+  }
+}
 
 // Live view: a CDP connection from this page, through the gateway, to the
 // browser. It attaches to the active tab and asks Chrome to stream it
@@ -14,7 +33,8 @@ export default function Live({ id }: { id: string }) {
   const [fps, setFps] = useState(0);
   const [lastFrameAgo, setLastFrameAgo] = useState(0);
   const [status, setStatus] = useState('connecting');
-  const [moves, setMoves] = useState<Move[]>([]);
+  const [events, setEvents] = useState<Ev[]>([]);
+  const [migrateError, setMigrateError] = useState('');
   const [busy, setBusy] = useState(false);
   const [fork, setFork] = useState<{ pausedMs?: number; sessions?: { id: string }[]; error?: string } | null>(null);
   const [forking, setForking] = useState(false);
@@ -29,9 +49,12 @@ export default function Live({ id }: { id: string }) {
     ws.current?.send(JSON.stringify({ id: cdpId.current++, method, params, ...(sessionId ? { sessionId } : {}) }));
   }, []);
 
-  // Session info, every 2 s.
+  // Session info and its event log, every 2 s.
   useEffect(() => {
-    const load = () => fetch(`/api/v1/sessions/${id}`).then((r) => r.json()).then(setSess).catch(() => {});
+    const load = () => {
+      fetch(`/api/v1/sessions/${id}`).then((r) => r.json()).then(setSess).catch(() => {});
+      fetch(`/api/v1/sessions/${id}/events`).then((r) => (r.ok ? r.json() : [])).then(setEvents).catch(() => {});
+    };
     load();
     const t = setInterval(load, 2000);
     return () => clearInterval(t);
@@ -99,7 +122,7 @@ export default function Live({ id }: { id: string }) {
     setBusy(true);
     const r = await fetch(`/api/v1/sessions/${id}/migrate`, { method: 'POST' });
     const d = await r.json();
-    setMoves((m) => [{ at: new Date().toLocaleTimeString(), ...d }, ...m]);
+    setMigrateError(r.ok ? '' : String(d.error ?? 'migration failed'));
     setBusy(false);
   };
   const navigate = () => pageSession.current && send('Page.navigate', { url }, pageSession.current);
@@ -148,17 +171,20 @@ export default function Live({ id }: { id: string }) {
           </p>
         )}
         <div>
-          <p className="text-zinc-500">Migrations</p>
+          <p className="text-zinc-500">Events</p>
+          {migrateError && <p className="mt-1 text-xs text-red-600">{migrateError}</p>}
           <ul className="mt-1 space-y-2">
-            {moves.length === 0 && <li className="text-zinc-500">None yet. Press “Migrate now”: the browser resumes on the other machine before its memory arrives, and the memory follows while it runs.</li>}
-            {moves.map((m, i) => (
-              <li key={i} className="rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
-                <span className="text-zinc-500">{m.at}</span>{' '}
-                {m.error ? <span className="text-red-600">{m.error}</span>
-                  : <>{m.from} → {m.to}<br /><span className="text-zinc-500">paused {m.pausedMs?.toFixed(0)} ms · unreachable {m.unreachableMs?.toFixed(0)} ms
-                    {m.streamMs ? <><br />then {m.streamMiB?.toFixed(0)} MiB of memory followed in {m.streamMs.toFixed(0)} ms while it ran</> : null}</span></>}
-              </li>
-            ))}
+            {events.length === 0 && <li className="text-zinc-500">Nothing yet.</li>}
+            {[...events].reverse().map((e, i) => {
+              const x = describe(e);
+              return (
+                <li key={i} className="rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
+                  <span className="text-zinc-500">{new Date(e.at).toLocaleTimeString()}</span>{' '}
+                  <span className={x.bad ? 'text-red-600' : ''}>{x.title}</span>
+                  {x.sub && <><br /><span className="text-zinc-500">{x.sub}</span></>}
+                </li>
+              );
+            })}
           </ul>
         </div>
       </aside>

@@ -113,6 +113,7 @@ func (a *Agent) pullImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	began := time.Now()
 	src := NewClient(req.From, a.cfg.Token)
 	ctx := r.Context()
 	sw := timing.Start()
@@ -159,6 +160,7 @@ func (a *Agent) pullImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sw.Lap("image received")
+	a.metrics.pullSeconds.Observe(time.Since(began).Seconds())
 	if err := a.heartbeat(ctx); err != nil {
 		log.Printf("pull %s: heartbeat: %v", name, err)
 	}

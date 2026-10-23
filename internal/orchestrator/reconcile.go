@@ -68,6 +68,7 @@ func (o *Orchestrator) markLost(ctx context.Context) {
 			continue
 		}
 		_ = o.store.SetState(v.ID, StateLost)
+		o.metrics.errors.WithLabelValues("vm_lost_node").Inc()
 		o.store.endSessionRecord(v.ID, "node lost")
 		o.delRoute(ctx, v.NetIndex)
 		n := o.closeConns(v.NetIndex)
@@ -175,6 +176,7 @@ func (o *Orchestrator) vanished(st api.Status) {
 		}
 		delete(o.gone, v.ID)
 		_ = o.store.SetState(v.ID, StateLost)
+		o.metrics.errors.WithLabelValues("vm_vanished").Inc()
 		o.store.endSessionRecord(v.ID, "browser stopped")
 		o.delRoute(context.Background(), v.NetIndex)
 		n := o.closeConns(v.NetIndex)

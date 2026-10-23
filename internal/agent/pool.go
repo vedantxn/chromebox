@@ -112,6 +112,16 @@ func (pl *pool) run(ctx context.Context, load func(string) error) {
 	}
 }
 
+// readyCount is how many slots are ready to claim (nil pool: none).
+func (pl *pool) readyCount() int {
+	if pl == nil {
+		return 0
+	}
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	return len(pl.ready)
+}
+
 func isSlot(id string) bool { return strings.HasPrefix(id, slotPrefix) }
 
 func destroySlot(s vm.Paths) {

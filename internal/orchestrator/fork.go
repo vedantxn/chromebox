@@ -38,6 +38,25 @@ type ForkResult struct {
 // gets its own address and session token, exactly like a fresh browser.
 // onReserve runs for each copy under the placement lock (account limits).
 func (o *Orchestrator) Fork(ctx context.Context, id string, n int, ttl time.Duration, onReserve ...func(id string) error) (ForkResult, error) {
+	res, err := o.fork(ctx, id, n, ttl, onReserve...)
+	if err != nil {
+		o.metrics.forks.WithLabelValues("failed").Inc()
+		o.metrics.errors.WithLabelValues("fork").Inc()
+		return res, err
+	}
+	o.metrics.forks.WithLabelValues("ok").Inc()
+	o.metrics.forkCopies.Add(float64(len(res.Copies)))
+	o.metrics.forkPause.Observe(res.PausedMs / 1000)
+	o.metrics.forkTotal.Observe(res.TotalMs / 1000)
+	o.store.addEvent(id, "forked", map[string]any{"copies": len(res.Copies), "requested": n, "paused_ms": res.PausedMs,
+		"image_mib": res.ImageMiB, "total_ms": res.TotalMs, "spilled_to": len(res.Spills)})
+	for _, c := range res.Copies {
+		o.store.addEvent(c.ID, "forked_from", map[string]any{"parent": id})
+	}
+	return res, nil
+}
+
+func (o *Orchestrator) fork(ctx context.Context, id string, n int, ttl time.Duration, onReserve ...func(id string) error) (ForkResult, error) {
 	start := time.Now()
 	res := ForkResult{Parent: id, Image: "fork-" + strings.TrimPrefix(id, "vm-") + "-" + randHex(2)}
 	parent, err := o.store.GetVM(id)

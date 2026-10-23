@@ -39,6 +39,24 @@ type MigrationResult struct {
 // commit (destroy its copy). If anything fails before the route moves, the
 // source is told to abort (resume) and the target's copy is deleted.
 func (o *Orchestrator) Migrate(ctx context.Context, id, target string) (MigrationResult, error) {
+	res, err := o.migrate(ctx, id, target)
+	if err != nil {
+		o.metrics.migrations.WithLabelValues("failed").Inc()
+		o.metrics.errors.WithLabelValues("migrate").Inc()
+		o.store.addEvent(id, "migration_failed", map[string]any{"from": res.From, "to": res.To, "error": err.Error()})
+		return res, err
+	}
+	o.metrics.migrations.WithLabelValues("ok").Inc()
+	o.metrics.migPause.Observe(res.PausedMs / 1000)
+	if res.PostCopy {
+		o.metrics.migStream.Observe(res.StreamMs / 1000)
+	}
+	o.store.addEvent(id, "migrated", map[string]any{"from": res.From, "to": res.To, "paused_ms": res.PausedMs,
+		"unreachable_ms": res.UnreachableMs, "stream_ms": res.StreamMs, "stream_mib": res.StreamMiB, "post_copy": res.PostCopy})
+	return res, nil
+}
+
+func (o *Orchestrator) migrate(ctx context.Context, id, target string) (MigrationResult, error) {
 	vm, err := o.store.GetVM(id)
 	if err != nil {
 		return MigrationResult{}, fmt.Errorf("unknown vm %q", id)

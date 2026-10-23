@@ -52,7 +52,8 @@ type Agent struct {
 	outMu    sync.Mutex
 	outgoing map[string]*outgoing // post-copy migrations still serving memory
 
-	pool *pool // jailed Firecracker processes started ahead of time
+	pool    *pool // jailed Firecracker processes started ahead of time
+	metrics *agentMetrics
 }
 
 // outgoing is a VM that runs on another node but whose memory is still here:
@@ -68,6 +69,7 @@ func New(cfg Config) *Agent {
 	if p := newPool(); p.size > 0 {
 		a.pool = p
 	}
+	a.metrics = newAgentMetrics(a)
 	return a
 }
 
@@ -100,6 +102,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.Status())
 	})
+	mux.Handle("GET /metrics", a.metrics.handler())
 	mux.HandleFunc("POST /v1/vms", a.createVM)
 	mux.HandleFunc("DELETE /v1/vms/{id}", a.deleteVM)
 	mux.HandleFunc("POST /v1/vms/{id}/migrate", a.migrateOut)
@@ -144,13 +147,19 @@ func (a *Agent) createVM(w http.ResponseWriter, r *http.Request) {
 	var slot []vm.Paths
 	if s, ok := a.pool.take(req.Base); ok {
 		slot = append(slot, s)
+		a.metrics.poolClaims.WithLabelValues("hit").Inc()
+	} else {
+		a.metrics.poolClaims.WithLabelValues("miss").Inc()
 	}
+	began := time.Now()
 	if err := base.Clone(r.Context(), p, req.Base, req.NetIndex, sw, slot...); err != nil {
+		a.metrics.vmFailures.WithLabelValues("create").Inc()
 		a.destroy(p) // leave nothing half-made behind
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	capLater(p)
+	a.metrics.create.Observe(since(began))
 	writeJSON(w, http.StatusCreated, api.CreateVMResponse{Laps: sw.Record()})
 }
 
@@ -288,6 +297,7 @@ func (a *Agent) migrateOut(w http.ResponseWriter, r *http.Request) {
 	} else {
 		vm.ClearMemDir(p) // the source may still resume (abort): keep its directory
 	}
+	a.metrics.migrateOut.Observe(since(paused))
 	writeJSON(w, http.StatusOK, api.MigrateResponse{Laps: sw.Record(), TargetLaps: tr.Laps,
 		PausedMs: float64(time.Since(paused).Microseconds()) / 1000, DeltaBytes: delta, PostCopy: postCopy})
 }
@@ -486,6 +496,7 @@ func (a *Agent) Status() api.Status {
 			// guest is frozen on a page nobody will serve. Kill it and stop
 			// reporting it; the orchestrator then declares it lost.
 			log.Printf("%s: memory handler died before the memory was complete, killing the VM", v.ID)
+			a.metrics.handlerKills.Inc()
 			_ = vm.Kill(p)
 			continue
 		}
@@ -678,6 +689,7 @@ func (a *Agent) forkImage(w http.ResponseWriter, r *http.Request) {
 	for _, k := range []string{"paused", "snapshot written", "disk cloned", "resumed"} {
 		paused += steps[k]
 	}
+	a.metrics.forkImage.Observe(paused.Seconds())
 	writeJSON(w, http.StatusOK, api.ForkImageResponse{Laps: sw.Record(),
 		PausedMs: float64(paused.Microseconds()) / 1000,
 		HeldMiB:  base.HeldMiB(req.Image, m), ZeroMiB: int(freed >> 20), DiskBase: m.DiskBase})

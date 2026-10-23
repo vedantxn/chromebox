@@ -39,6 +39,7 @@ func (s *Store) accountSchema() error {
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL,
 			ended_at TEXT NOT NULL DEFAULT '', end_reason TEXT NOT NULL DEFAULT '', migrations INTEGER NOT NULL DEFAULT 0)`,
+		eventSchema, eventIndex,
 	} {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return err
@@ -77,6 +78,7 @@ func (o *Orchestrator) accountRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/users/{uid}/sessions", o.listSessions)
 	mux.HandleFunc("POST /v1/users/{uid}/sessions", o.createSession)
 	mux.HandleFunc("GET /v1/users/{uid}/sessions/{sid}", o.getSession)
+	mux.HandleFunc("GET /v1/users/{uid}/sessions/{sid}/events", o.sessionEvents)
 	mux.HandleFunc("DELETE /v1/users/{uid}/sessions/{sid}", o.endSession)
 	mux.HandleFunc("POST /v1/users/{uid}/sessions/{sid}/migrate", o.migrateSession)
 	mux.HandleFunc("POST /v1/users/{uid}/sessions/{sid}/fork", o.forkSession)
@@ -397,7 +399,12 @@ func (o *Orchestrator) usage(w http.ResponseWriter, r *http.Request) {
 
 // endSessionRecord closes the session row of VM id (no-op if it has none).
 func (s *Store) endSessionRecord(id, reason string) {
-	_, _ = s.db.Exec(`UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at = ''`, now(), reason, id)
+	res, err := s.db.Exec(`UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at = ''`, now(), reason, id)
+	if err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			s.addEvent(id, "ended", map[string]any{"reason": reason})
+		}
+	}
 }
 
 func (s *Store) countMigration(id string) {

@@ -63,6 +63,8 @@ type Orchestrator struct {
 	gone   map[string]time.Time // running VMs missing from their node's heartbeats, since when
 
 	started time.Time
+
+	metrics *metrics
 }
 
 func New(cfg Config) (*Orchestrator, error) {
@@ -80,6 +82,7 @@ func New(cfg Config) (*Orchestrator, error) {
 		return nil, err
 	}
 	o := &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}, gone: map[string]time.Time{}, started: time.Now()}
+	o.metrics = newMetrics(o)
 	return o, nil
 }
 
@@ -103,6 +106,7 @@ func (o *Orchestrator) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
 	mux.HandleFunc("POST /v1/heartbeat", o.heartbeat)
+	mux.Handle("GET /metrics", o.metrics.handler())
 	mux.HandleFunc("POST /v1/vms", o.createVM)
 	mux.HandleFunc("GET /v1/vms", o.listVMs)
 	mux.HandleFunc("DELETE /v1/vms/{id}", o.deleteVM)
@@ -213,6 +217,19 @@ func (o *Orchestrator) baseMem(name string) (int, bool) {
 // Create's onReserve, if set, runs right after the VM's row is written and
 // before the VM starts (an account's session record is written there).
 func (o *Orchestrator) Create(ctx context.Context, baseName string, ttl time.Duration, onReserve ...func(id string) error) (api.VM, api.CreateVMResponse, error) {
+	start := time.Now()
+	vm, resp, err := o.create(ctx, baseName, ttl, onReserve...)
+	if err != nil {
+		o.metrics.errors.WithLabelValues("create").Inc()
+		return vm, resp, err
+	}
+	d := time.Since(start)
+	o.metrics.create.Observe(secs(d))
+	o.store.addEvent(vm.ID, "created", map[string]any{"node": vm.Node, "base": vm.Base, "create_ms": ms(d)})
+	return vm, resp, nil
+}
+
+func (o *Orchestrator) create(ctx context.Context, baseName string, ttl time.Duration, onReserve ...func(id string) error) (api.VM, api.CreateVMResponse, error) {
 	sw := timing.Start()
 	mem, ok := o.baseMem(baseName)
 	if !ok {
