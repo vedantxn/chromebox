@@ -82,7 +82,7 @@ func Configure(ctx context.Context, c *firecracker.Client, p Paths, s Spec) erro
 		return err
 	}
 	if s.Vsock {
-		if err := c.PutVsock(ctx, firecracker.Vsock{GuestCID: 3, UDSPath: p.VsockSock()}); err != nil {
+		if err := c.PutVsock(ctx, firecracker.Vsock{GuestCID: 3, UDSPath: JailVsock}); err != nil {
 			return err
 		}
 	}
@@ -130,8 +130,8 @@ func Snapshot(ctx context.Context, c *firecracker.Client, p Paths, o SnapshotOpt
 	}
 	sw.Lap("paused")
 	if err := c.CreateSnapshot(ctx, firecracker.SnapshotCreate{
-		SnapshotPath:      p.Vmstate(),
-		MemFilePath:       p.Mem(),
+		SnapshotPath:      JailVmstate, // p.Vmstate(), as the jailed VM sees it
+		MemFilePath:       JailMem,
 		SnapshotType:      "Full",
 		SyncSnapshotFiles: &o.Sync,
 	}); err != nil {
@@ -221,23 +221,23 @@ func LoadPrepared(ctx context.Context, p Paths, sw *timing.Stopwatch, uffdArgs .
 	}
 	sw.Lap("disk restored")
 	c := firecracker.New(p.Socket())
-	mem := firecracker.MemBackend{BackendType: "File", BackendPath: p.Mem()}
+	mem := firecracker.MemBackend{BackendType: "File", BackendPath: JailMem}
 	if len(uffdArgs) > 0 {
 		if err := StartUffd(p, uffdArgs...); err != nil {
 			return nil, err
 		}
-		mem = firecracker.MemBackend{BackendType: "Uffd", BackendPath: p.UffdSock()}
+		mem = firecracker.MemBackend{BackendType: "Uffd", BackendPath: JailUffd}
 		sw.Lap("uffd handler ready")
 	}
 	load := firecracker.SnapshotLoad{
-		SnapshotPath: p.Vmstate(),
+		SnapshotPath: JailVmstate,
 		MemBackend:   mem,
 		ResumeVM:     true,
 		// Off by default: see docs/learn/m2.md (C5) for why.
 		ClockRealtime: os.Getenv("CHROMEBOX_CLOCK_REALTIME") != "",
 	}
 	if _, img, err := ImageOf(p); err == nil && img.Vsock {
-		load.VsockOverride = &firecracker.VsockOverride{UDSPath: p.VsockSock()}
+		load.VsockOverride = &firecracker.VsockOverride{UDSPath: JailVsock}
 	}
 	if err := c.LoadSnapshot(ctx, load); err != nil {
 		return nil, err

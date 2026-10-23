@@ -27,21 +27,31 @@ const DrivePath = "/run/chromebox/drive/rootfs.ext4"
 // JailBase is where the jailer makes each VM's chroot: <JailBase>/firecracker/<id>/root.
 const JailBase = "/srv/jailer"
 
+// jailName is the jailer id VM p runs under: its own id, or for a VM made
+// from a pool slot, the slot's (recorded in the VM directory when the jail is
+// made, so it follows the directory when it is renamed).
+func jailName(p Paths) string {
+	if b, err := os.ReadFile(filepath.Join(p.Dir, "jail")); err == nil {
+		return strings.TrimSpace(string(b))
+	}
+	return filepath.Base(p.Dir)
+}
+
 // jailRoot is the chroot of VM p.
 func jailRoot(p Paths) string {
-	return filepath.Join(JailBase, "firecracker", filepath.Base(p.Dir), "root")
+	return filepath.Join(JailBase, "firecracker", jailName(p), "root")
 }
 
 // cgroupDir is VM p's cgroup (v2), made by the jailer under chromebox/.
 func cgroupDir(p Paths) string {
-	return filepath.Join("/sys/fs/cgroup/chromebox", filepath.Base(p.Dir))
+	return filepath.Join("/sys/fs/cgroup/chromebox", jailName(p))
 }
 
 // startScript runs as root inside a new, private mount namespace, so nothing
 // it mounts is seen by the host. It builds the VM's jail: the VM's disk bound
-// onto DrivePath, and each directory the VM needs bound at the same absolute
-// path it has on the host (read-only where marked with a leading "ro:"), so
-// every path in the code and in existing snapshots stays valid inside. Then it
+// onto DrivePath, and each directory the VM needs, given as host[=jail]: the
+// VM's own directories at JailVMDir and JailMemDir, shared ones (kernels, its
+// base) at their host paths, read-only where marked with a leading "ro:". Then it
 // becomes Firecracker's jailer, which chroots there, makes the device nodes
 // (kvm, tun, urandom, userfaultfd), puts the VM in its own PID namespace and
 // cgroup, drops to the unprivileged user and execs Firecracker. The jailer's
@@ -54,31 +64,49 @@ mount --bind "$disk" "$J/run/chromebox/drive/rootfs.ext4" || exit 1
 while [ "$n" -gt 0 ]; do
   d="$1"; shift; n=$((n-1)); ro=
   case "$d" in ro:*) ro=1; d=${d#ro:};; esac
-  mkdir -p "$J$d" && mount --bind "$d" "$J$d" || exit 1
-  [ -z "$ro" ] || mount -o remount,bind,ro "$J$d" || exit 1
+  src=${d%%=*}; dst=${d#*=}
+  mkdir -p "$J$dst" && mount --bind "$src" "$J$dst" || exit 1
+  [ -z "$ro" ] || mount -o remount,bind,ro "$J$dst" || exit 1
 done
 exec jailer "$@"`
 
-// limits are the cgroup limits each VM gets. memory.max covers the guest plus
-// Firecracker itself; pids.max stops a runaway VMM. CPU: every VM's cgroup has
-// the same cpu.weight, so under contention VMs get equal shares whatever
-// number of busy threads each has, and cpu.max caps a VM at one CPU, so a busy
-// browser cannot take a 2-CPU node. Equal weight alone left a neighbour's p99
-// at 3x its idle value; the cap kept it near idle (docs/learn/prod.md, J2).
-// The period is 20 ms, not the default 100 ms: a capped VM at its quota
-// sleeps until the next period, Firecracker's own threads included, and a
-// short period bounds that wait (a busy capped VM still migrates with a
-// 217-242 ms pause). CHROMEBOX_VM_CPU_MAX overrides it ("max": no cap).
+// limits are the cgroup limits each VM starts with. memory.max covers the
+// guest plus Firecracker itself; pids.max stops a runaway VMM. Every VM's
+// cgroup has the same cpu.weight, so under contention VMs share CPU equally,
+// whatever number of busy threads each has. A VM starts without a CPU cap:
+// a browser waking from a snapshot needs both its vCPUs for a moment, and a
+// one-CPU cap made every create ~75 ms slower (p50 248 against 174 ms). The
+// cap is applied once the browser is up (CapCPU).
 func limits(p Paths) []string {
-	cpu := "20000 20000"
-	if v := os.Getenv("CHROMEBOX_VM_CPU_MAX"); v != "" {
-		cpu = v
-	}
-	out := []string{"pids.max=64", "cpu.max=" + cpu}
+	out := []string{"pids.max=64", "cpu.max=max"}
 	if _, img, err := ImageOf(p); err == nil {
 		out = append(out, fmt.Sprintf("memory.max=%d", int64(img.MemMiB+256)<<20))
 	}
 	return out
+}
+
+// CPUCap is the cap a running VM gets: one CPU, so a busy browser cannot take
+// a 2-CPU node (equal weights alone left a neighbour's p99 at 3x its idle
+// value; the cap kept it near idle; docs/learn/prod.md, J2). The period is
+// 20 ms, not the default 100: a capped VM at its quota sleeps until the next
+// period, Firecracker's own threads included, and a short period bounds that
+// wait (a busy capped VM still migrates with a 217-242 ms pause).
+// CHROMEBOX_VM_CPU_MAX overrides it ("max": no cap).
+func CPUCap() string {
+	if v := os.Getenv("CHROMEBOX_VM_CPU_MAX"); v != "" {
+		return v
+	}
+	return "20000 20000"
+}
+
+// CapCPU applies CPUCap to running VM p's cgroup.
+func CapCPU(p Paths) error {
+	cmd := exec.Command("sudo", "tee", filepath.Join(cgroupDir(p), "cpu.max"))
+	cmd.Stdin = strings.NewReader(CPUCap())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("cap cpu: %w: %s", err, out)
+	}
+	return nil
 }
 
 // StartProcess launches a jailed Firecracker for the VM at p and waits until
@@ -108,14 +136,17 @@ func StartProcess(ctx context.Context, p Paths, readOnly ...string) (*firecracke
 	defer log.Close() // the child keeps its own copy of the descriptor
 
 	id := filepath.Base(p.Dir)
+	if err := os.WriteFile(filepath.Join(p.Dir, "jail"), []byte(id+"\n"), 0o644); err != nil {
+		return nil, err
+	}
 	args := []string{"--id", id, "--exec-file", "/usr/local/bin/firecracker",
 		"--uid", strconv.Itoa(os.Getuid()), "--gid", strconv.Itoa(os.Getgid()),
 		"--chroot-base-dir", JailBase, "--new-pid-ns", "--cgroup-version", "2", "--parent-cgroup", "chromebox"}
 	for _, l := range limits(p) {
 		args = append(args, "--cgroup", l)
 	}
-	args = append(args, "--", "--api-sock", p.Socket())
-	dirs := []string{p.Dir, p.MemDir(), "ro:" + filepath.Dir(KernelPath)}
+	args = append(args, "--", "--api-sock", JailSocket)
+	dirs := []string{p.Dir + "=" + JailVMDir, p.MemDir() + "=" + JailMemDir, "ro:" + filepath.Dir(KernelPath)}
 	for _, d := range readOnly {
 		dirs = append(dirs, "ro:"+d)
 	}

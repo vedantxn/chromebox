@@ -83,3 +83,14 @@ U
 sudo systemctl daemon-reload
 sudo systemctl enable --now chromebox-cgroup.service >/dev/null 2>&1
 echo "ok: $(jailer --version | head -1); cgroup chromebox/ controllers: $(cat /sys/fs/cgroup/chromebox/cgroup.subtree_control); $(grep -o favordynmods /proc/mounts | head -1)"
+
+# 6. Keep systemd-logind away from /dev/shm. With RemoveIPC=yes (its default),
+# when the last login session of a regular user ends, logind deletes every
+# file that user owns in /dev/shm: base memory, fork images, pool slots and
+# the memory dirs of running VMs (found when idle pool slots lost theirs
+# after an ssh session closed). Running VMs survived because their memory
+# stays mapped; anything that opened those files by name later did not.
+sudo mkdir -p /etc/systemd/logind.conf.d
+printf '[Login]\nRemoveIPC=no\n' | sudo tee /etc/systemd/logind.conf.d/chromebox.conf >/dev/null
+sudo systemctl restart systemd-logind
+echo "ok: logind RemoveIPC=$(systemd-analyze cat-config systemd/logind.conf 2>/dev/null | grep -E '^RemoveIPC' | tail -1 | cut -d= -f2)"

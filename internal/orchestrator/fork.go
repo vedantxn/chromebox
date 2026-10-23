@@ -197,8 +197,13 @@ func (o *Orchestrator) forkVM(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, res)
 }
 
-// collectForks deletes fork images no VM uses any more. An image is given a
-// minute first, so that its copies have time to be placed.
+// forkImageGrace is how long a new fork image is kept with no VM using it: a
+// fork places its copies within seconds of making the image. (A minute was
+// long enough for unused images to fill a node between back-to-back forks.)
+const forkImageGrace = 15 * time.Second
+
+// collectForks deletes fork images no VM uses any more, once they are older
+// than forkImageGrace.
 func (o *Orchestrator) collectForks(ctx context.Context) {
 	vms, err := o.store.ListVMs()
 	if err != nil {
@@ -213,7 +218,7 @@ func (o *Orchestrator) collectForks(ctx context.Context) {
 	var stale []img
 	for node, s := range o.seen {
 		for _, b := range s.Status.Bases {
-			if base.IsFork(b.Name) && !used[b.Name] && time.Since(b.BuiltAt) > time.Minute {
+			if base.IsFork(b.Name) && !used[b.Name] && time.Since(b.BuiltAt) > forkImageGrace {
 				stale = append(stale, img{node, b.Name})
 			}
 		}

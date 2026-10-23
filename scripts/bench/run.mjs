@@ -48,7 +48,7 @@ out.environment = {
   region: 'us-east-1',
   client: 'bench client, t3.small, same VPC',
   nodes: 'm8i.large (2 vCPU, 8 GiB) with nested virtualization; gateway t3.small',
-  vmm: 'Firecracker v1.17.0 under its jailer; cgroup v2 per VM (1 CPU, guest + 256 MiB)',
+  vmm: 'Firecracker v1.17.0 under its jailer; cgroup v2 per VM (guest + 256 MiB; capped at 1 CPU once running); 2 pre-started jailed VMMs kept ready per node',
   guest: 'Chrome for Testing 156, 2 vCPU, 1 GiB per browser',
   nodes_up: nodes.filter((n) => n.up).map((n) => n.name),
 };

@@ -51,6 +51,8 @@ type Agent struct {
 
 	outMu    sync.Mutex
 	outgoing map[string]*outgoing // post-copy migrations still serving memory
+
+	pool *pool // jailed Firecracker processes started ahead of time
 }
 
 // outgoing is a VM that runs on another node but whose memory is still here:
@@ -61,7 +63,13 @@ type outgoing struct {
 	resumed time.Time
 }
 
-func New(cfg Config) *Agent { return &Agent{cfg: cfg, outgoing: map[string]*outgoing{}} }
+func New(cfg Config) *Agent {
+	a := &Agent{cfg: cfg, outgoing: map[string]*outgoing{}}
+	if p := newPool(); p.size > 0 {
+		a.pool = p
+	}
+	return a
+}
 
 // Run serves until ctx ends, sending a heartbeat every second.
 func (a *Agent) Run(ctx context.Context) error {
@@ -70,6 +78,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	go func() { errc <- srv.ListenAndServe() }()
 	if a.cfg.Orchestrator != "" {
 		go a.heartbeats(ctx)
+	}
+	if a.pool != nil {
+		go a.pool.run(ctx, func(name string) error {
+			a.loadMu.Lock()
+			defer a.loadMu.Unlock()
+			return base.Load(name)
+		})
 	}
 	select {
 	case <-ctx.Done():
@@ -126,11 +141,16 @@ func (a *Agent) createVM(w http.ResponseWriter, r *http.Request) {
 	}
 	p := vm.PathsFor(req.ID)
 	sw := timing.Start()
-	if err := base.Clone(r.Context(), p, req.Base, req.NetIndex, sw); err != nil {
+	var slot []vm.Paths
+	if s, ok := a.pool.take(req.Base); ok {
+		slot = append(slot, s)
+	}
+	if err := base.Clone(r.Context(), p, req.Base, req.NetIndex, sw, slot...); err != nil {
 		a.destroy(p) // leave nothing half-made behind
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	capLater(p)
 	writeJSON(w, http.StatusCreated, api.CreateVMResponse{Laps: sw.Record()})
 }
 
@@ -414,6 +434,7 @@ func (a *Agent) accept(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	capLater(p)
 	// The VM runs. Answer now, so the route moves while the browser warms up
 	// (with post-copy, its first moments are page faults); its readiness is
 	// only logged. Waiting here added ~400 ms to the pause in C2.
@@ -482,7 +503,7 @@ func listVMs() []api.VMInfo {
 	entries, _ := os.ReadDir(filepath.Join(vm.StateDir, "vms"))
 	for _, e := range entries {
 		p := vm.PathsFor(e.Name())
-		if !alive(p) {
+		if isSlot(e.Name()) || !alive(p) { // pool slots are not VMs
 			continue
 		}
 		info := api.VMInfo{ID: e.Name(), MemMiB: 0}
@@ -668,4 +689,15 @@ func (a *Agent) deleteBase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// capLater applies the running-VM CPU cap a moment after a VM is up: it
+// starts uncapped so that waking from a snapshot is not slowed (vm.CPUCap).
+func capLater(p vm.Paths) {
+	go func() {
+		time.Sleep(2 * time.Second)
+		if err := vm.CapCPU(p); err != nil {
+			log.Printf("%s: %v", filepath.Base(p.Dir), err)
+		}
+	}()
 }

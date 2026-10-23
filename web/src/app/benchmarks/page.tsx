@@ -120,7 +120,8 @@ export default function Benchmarks() {
           <li>Nested virtualization (KVM inside an EC2 VM) is slower than the bare-metal hosts sandbox providers usually run on; every number here would be lower there.</li>
           <li>The client: {String(d.environment.client)}. Internal tests talk to the orchestrator and gateway on private addresses; the public test goes through the internet, Vercel and CloudFront, as a customer would.</li>
           <li>Fresh start is the orchestrator&apos;s own time from request to Chrome answering, including placement, the node starting the VM in its jail, and the network route.</li>
-          <li>Percentiles are over the samples listed; the raw samples are in the JSON. No warm pools: every browser is a new VM started from a snapshot.</li>
+          <li>Every browser is a new VM restored from a snapshot. Each node keeps two jailed Firecracker processes started ahead of time (no guest yet, nothing about the browser to come); a create claims one and restores into it.</li>
+          <li>Percentiles are over the samples listed; the raw samples are in the JSON.</li>
         </ul>
       </section>
     </main>

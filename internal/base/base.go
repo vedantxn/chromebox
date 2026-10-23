@@ -127,7 +127,7 @@ func Fork(ctx context.Context, c *firecracker.Client, p vm.Paths, name string, s
 	}
 	sw.Lap("paused")
 	nosync := false
-	err = c.CreateSnapshot(ctx, firecracker.SnapshotCreate{SnapshotPath: tmpState, MemFilePath: tmpMem,
+	err = c.CreateSnapshot(ctx, firecracker.SnapshotCreate{SnapshotPath: vm.JailMemDir + "/fork-vmstate", MemFilePath: vm.JailMemDir + "/fork-mem",
 		SnapshotType: "Full", SyncSnapshotFiles: &nosync})
 	sw.Lap("snapshot written")
 	if err == nil {
@@ -332,38 +332,60 @@ func Load(name string) error {
 //     and the time over vsock;
 //  5. the browser's endpoint is asked for its version, through the TAP, as
 //     proof that the whole path works.
-func Clone(ctx context.Context, p vm.Paths, name string, netIndex int, sw *timing.Stopwatch) error {
+//
+// With a slot (a jailed Firecracker started ahead of time by PrepareSlot for
+// this base), steps 1 and 2's process start are already done: the slot's
+// directories are renamed to the VM's, and the VM sees no difference, since
+// inside its jail its directories are always /vm and /mem.
+func Clone(ctx context.Context, p vm.Paths, name string, netIndex int, sw *timing.Stopwatch, slot ...vm.Paths) error {
 	m, err := Read(name)
 	if err != nil {
 		return fmt.Errorf("base %q: %w", name, err)
 	}
-	if err := os.MkdirAll(p.Dir, 0o755); err != nil {
+	nn, err := netsetup.ForIndex(netIndex)
+	if err != nil {
 		return err
 	}
-	if err := vm.CloneFile(Disk(name), p.Rootfs()); err != nil {
-		return err
+	var c *firecracker.Client
+	if len(slot) > 0 {
+		if err := os.Rename(slot[0].Dir, p.Dir); err != nil {
+			return err
+		}
+		if err := os.Rename(slot[0].MemDir(), p.MemDir()); err != nil {
+			return err
+		}
+		c = firecracker.New(p.Socket())
+		sw.Lap("pool slot claimed")
+	} else {
+		if err := os.MkdirAll(p.Dir, 0o755); err != nil {
+			return err
+		}
+		if err := vm.CloneFile(Disk(name), p.Rootfs()); err != nil {
+			return err
+		}
+		sw.Lap("disk cloned")
 	}
 	for f, v := range map[string]string{p.ImageFile(): m.Image, p.BaseFile(): name, p.NetFile(): strconv.Itoa(netIndex)} {
 		if err := os.WriteFile(f, []byte(v+"\n"), 0o644); err != nil {
 			return err
 		}
 	}
-	nn, err := netsetup.ForIndex(netIndex)
-	if err != nil {
-		return err
+	if c == nil {
+		tapDone := make(chan error, 1)
+		go func() { tapDone <- nn.EnsureTap(os.Getuid(), os.Getgid()) }()
+		if c, err = vm.StartProcess(ctx, p, shm(name)); err != nil { // the jailed VM sees its base read-only
+			return err
+		}
+		if err := <-tapDone; err != nil {
+			return err
+		}
+		sw.Lap("tap + firecracker ready")
+	} else {
+		if err := nn.EnsureTap(os.Getuid(), os.Getgid()); err != nil {
+			return err
+		}
+		sw.Lap("tap ready")
 	}
-	sw.Lap("disk cloned")
-
-	tapDone := make(chan error, 1)
-	go func() { tapDone <- nn.EnsureTap(os.Getuid(), os.Getgid()) }()
-	c, err := vm.StartProcess(ctx, p, shm(name)) // the jailed VM sees its base read-only
-	if err != nil {
-		return err
-	}
-	if err := <-tapDone; err != nil {
-		return err
-	}
-	sw.Lap("tap + firecracker ready")
 
 	mem := firecracker.MemBackend{BackendType: "File", BackendPath: ShmMem(name)}
 	// CHROMEBOX_UFFD (M5, experiment): serve the memory through our own
@@ -376,7 +398,7 @@ func Clone(ctx context.Context, p vm.Paths, name string, netIndex int, sw *timin
 		if err := vm.StartUffd(p, args...); err != nil {
 			return err
 		}
-		mem = firecracker.MemBackend{BackendType: "Uffd", BackendPath: p.UffdSock()}
+		mem = firecracker.MemBackend{BackendType: "Uffd", BackendPath: vm.JailUffd}
 		sw.Lap("uffd handler ready")
 	}
 	if err := c.LoadSnapshot(ctx, firecracker.SnapshotLoad{
@@ -384,7 +406,7 @@ func Clone(ctx context.Context, p vm.Paths, name string, netIndex int, sw *timin
 		MemBackend:       mem,
 		ResumeVM:         true,
 		NetworkOverrides: []firecracker.NetworkOverride{{IfaceID: "eth0", HostDevName: nn.TapName}},
-		VsockOverride:    &firecracker.VsockOverride{UDSPath: p.VsockSock()},
+		VsockOverride:    &firecracker.VsockOverride{UDSPath: vm.JailVsock},
 	}); err != nil {
 		return err
 	}
@@ -410,6 +432,29 @@ func Clone(ctx context.Context, p vm.Paths, name string, netIndex int, sw *timin
 		sw.Lap("open tabs moved to fresh renderers")
 	}
 	return nil
+}
+
+// PrepareSlot starts a pool slot for base name: the base's disk cloned and a
+// jailed Firecracker waiting, with the base visible to it read-only. That is
+// the part of a create that does not depend on the VM's id or address (~70 ms
+// of process and jail start), done before anyone asks. Clone then claims it.
+func PrepareSlot(ctx context.Context, slot vm.Paths, name string) error {
+	m, err := Read(name)
+	if err != nil {
+		return fmt.Errorf("base %q: %w", name, err)
+	}
+	if err := os.MkdirAll(slot.Dir, 0o755); err != nil {
+		return err
+	}
+	if err := vm.CloneFile(Disk(name), slot.Rootfs()); err != nil {
+		return err
+	}
+	// The image sets the jail's memory limit.
+	if err := os.WriteFile(slot.ImageFile(), []byte(m.Image+"\n"), 0o644); err != nil {
+		return err
+	}
+	_, err = vm.StartProcess(ctx, slot, shm(name))
+	return err
 }
 
 func copyFile(src, dst string) error {

@@ -87,3 +87,20 @@ func ClearMemDir(p Paths) {
 		_ = os.RemoveAll(filepath.Join(p.MemDir(), e.Name()))
 	}
 }
+
+// Inside its jail, every VM sees its own directory at JailVMDir and its memory
+// directory at JailMemDir, whatever its id. Every path handed to Firecracker
+// is one of these, so a jail made before the VM had an id (a pool slot) is
+// used by renaming its directories on the host: what the VM sees never
+// changes. The host keeps using p.Dir and p.MemDir(), which name the same
+// files.
+const (
+	JailVMDir  = "/vm"
+	JailMemDir = "/mem"
+
+	JailSocket  = JailVMDir + "/fc.sock"
+	JailVsock   = JailVMDir + "/v.sock"
+	JailUffd    = JailVMDir + "/uffd.sock"
+	JailVmstate = JailMemDir + "/vmstate"
+	JailMem     = JailMemDir + "/mem"
+)
