@@ -60,19 +60,21 @@ done
 exec jailer "$@"`
 
 // limits are the cgroup limits each VM gets. memory.max covers the guest plus
-// Firecracker itself; pids.max stops a runaway VMM. CPU is shared, not capped:
-// every VM's cgroup has the same cpu.weight, so under contention VMs get equal
-// shares of the node, whatever number of busy threads each has. A hard cap
-// (cpu.max) was the first default and was dropped: with a VM at its quota,
-// all its threads sleep until the next 100 ms period, Firecracker's included,
-// so a pause request waited for them and every migration and fork pause grew
-// by ~110 ms. CHROMEBOX_VM_CPU_MAX sets a cap (e.g. "100000 100000" for one
-// CPU) for the noisy-neighbour test or a paid tier.
+// Firecracker itself; pids.max stops a runaway VMM. CPU: every VM's cgroup has
+// the same cpu.weight, so under contention VMs get equal shares whatever
+// number of busy threads each has, and cpu.max caps a VM at one CPU, so a busy
+// browser cannot take a 2-CPU node. Equal weight alone left a neighbour's p99
+// at 3x its idle value; the cap kept it near idle (docs/learn/prod.md, J2).
+// The period is 20 ms, not the default 100 ms: a capped VM at its quota
+// sleeps until the next period, Firecracker's own threads included, and a
+// short period bounds that wait (a busy capped VM still migrates with a
+// 217-242 ms pause). CHROMEBOX_VM_CPU_MAX overrides it ("max": no cap).
 func limits(p Paths) []string {
-	out := []string{"pids.max=64"}
+	cpu := "20000 20000"
 	if v := os.Getenv("CHROMEBOX_VM_CPU_MAX"); v != "" {
-		out = append(out, "cpu.max="+v)
+		cpu = v
 	}
+	out := []string{"pids.max=64", "cpu.max=" + cpu}
 	if _, img, err := ImageOf(p); err == nil {
 		out = append(out, fmt.Sprintf("memory.max=%d", int64(img.MemMiB+256)<<20))
 	}
