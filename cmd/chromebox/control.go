@@ -47,7 +47,17 @@ func runAgent(listen string) error {
 // on :9222. Strategy from CHROMEBOX_STRATEGY (spread or pack).
 func runOrchestrator(listen string) error {
 	maxVMs, _ := strconv.Atoi(os.Getenv("CHROMEBOX_MAX_VMS"))
+	auto := orchestrator.AutoscaleFromEnv()
+	var instances orchestrator.Instances
+	if auto.Enabled {
+		e, err := orchestrator.NewEC2(context.Background(), "us-east-1")
+		if err != nil {
+			return err
+		}
+		instances = e
+	}
 	o, err := orchestrator.New(orchestrator.Config{
+		Autoscale: auto, Instances: instances,
 		Token: os.Getenv("CHROMEBOX_TOKEN"), DBPath: "/var/lib/chromebox/orchestrator.db",
 		APIListen: listen, ProxyAdmin: "http://127.0.0.1:9301",
 		SessionSecret: []byte(os.Getenv("CHROMEBOX_SESSION_SECRET")), MaxVMs: maxVMs,
@@ -158,9 +168,9 @@ func ctlCmd(args []string) error {
 			return err
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "NODE\tUP\tCORDONED\tVMS\tMEMORY USED/CAP (MiB)")
+		fmt.Fprintln(tw, "NODE\tUP\tCORDONED\tVMS\tMEMORY USED/CAP (MiB)\tSTATE")
 		for _, n := range ns {
-			fmt.Fprintf(tw, "%s\t%v\t%v\t%d\t%d / %d\n", n.Name, n.Up, n.Cordoned, n.VMs, n.UsedMiB, n.CapMemMiB)
+			fmt.Fprintf(tw, "%s\t%v\t%v\t%d\t%d / %d\t%s\n", n.Name, n.Up, n.Cordoned, n.VMs, n.UsedMiB, n.CapMemMiB, n.State)
 		}
 		tw.Flush()
 	case "bench":

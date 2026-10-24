@@ -247,6 +247,7 @@ func (o *Orchestrator) createSession(w http.ResponseWriter, r *http.Request) {
 			code = http.StatusTooManyRequests
 		case strings.HasPrefix(err.Error(), "no node"):
 			code = http.StatusServiceUnavailable
+			o.retryAfter(w)
 		case strings.HasPrefix(err.Error(), "no profile"):
 			code = http.StatusNotFound
 		}

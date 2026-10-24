@@ -32,6 +32,7 @@ type metrics struct {
 	forks      *prometheus.CounterVec // result
 	forkCopies prometheus.Counter
 	errors     *prometheus.CounterVec // kind
+	autoscale  *prometheus.CounterVec // action
 }
 
 func newMetrics(o *Orchestrator) *metrics {
@@ -53,8 +54,9 @@ func newMetrics(o *Orchestrator) *metrics {
 		forks:      prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_forks_total", Help: "Forks by result."}, []string{"result"}),
 		forkCopies: prometheus.NewCounter(prometheus.CounterOpts{Name: "baton_fork_copies_total", Help: "Copies started by forks."}),
 		errors:     prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_errors_total", Help: "Failures by kind."}, []string{"kind"}),
+		autoscale:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_autoscaler_actions_total", Help: "Autoscaler actions by kind."}, []string{"action"}),
 	}
-	m.reg.MustRegister(m.pause, m.resume, m.pauses, m.resumes, m.create, m.migPause, m.migStream, m.forkPause, m.forkTotal, m.migrations, m.forks, m.forkCopies, m.errors,
+	m.reg.MustRegister(m.pause, m.resume, m.pauses, m.resumes, m.create, m.autoscale, m.migPause, m.migStream, m.forkPause, m.forkTotal, m.migrations, m.forks, m.forkCopies, m.errors,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), &stateCollector{o})
 	return m
 }

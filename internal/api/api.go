@@ -171,6 +171,7 @@ type Node struct {
 	CapMemMiB int    `json:"cap_mem_mib"`
 	UsedMiB   int    `json:"used_mem_mib"`
 	AgentURL  string `json:"agent_url"`
+	State     string `json:"state,omitempty"` // starting, draining or stopping, when the autoscaler is working on it
 }
 
 // MigrateRequest asks a source agent to move one of its VMs to another node.

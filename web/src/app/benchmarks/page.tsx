@@ -84,6 +84,17 @@ export default function Benchmarks() {
       <Table title="Fork a running browser" what="A browser with a page open is copied: the copies share its cookies, storage and open pages; each gets its own address and fresh random state."
         rows={[['parent paused (1 copy)', f1.parent_paused], ['1 copy ready', f1.all_copies_ready], ['parent paused (3 copies)', f3.parent_paused], ['3 copies ready', f3.all_copies_ready]]} />
 
+      {t.pause_resume && (() => { const pr = t.pause_resume as Record<string, Stat>; return (
+        <Table title="Pause to storage, resume anywhere" what={String(t.pause_resume.what)}
+          rows={[['pause: request → stored and stopped', pr.pause_total], ['pause: the browser stopped for the snapshot', pr.browser_stopped_for_snapshot],
+            ['pause: upload to S3', pr.upload], ['resume: request → Chrome answering', pr.resume_total], ['resume: download from S3', pr.resume_download]]} />); })()}
+      {t.profile && (() => { const pf = t.profile as unknown as { what: string; save: { ms: number; browser_paused_ms: number; stored_mib: number }; first_session: Stat; later_sessions: Stat }; return (
+        <>
+          <Table title="Start from a saved profile (already logged in)" what={pf.what}
+            rows={[['first session (fetches the profile to a machine)', pf.first_session], ['next sessions', pf.later_sessions]]} />
+          <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">Saving the profile took {Math.round(pf.save.ms)} ms; the browser was paused {Math.round(pf.save.browser_paused_ms)} ms; {Math.round(pf.save.stored_mib)} MiB stored.</p>
+        </>); })()}
+
       <section className="mt-10">
         <h2 className="text-lg font-semibold">What a browser costs</h2>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{String(t.density.what)}. Each browser has 1,024 MiB of guest memory.</p>

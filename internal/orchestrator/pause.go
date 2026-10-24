@@ -269,6 +269,7 @@ func (o *Orchestrator) resumeSession(w http.ResponseWriter, r *http.Request) {
 			code = http.StatusTooManyRequests
 		case len(err.Error()) > 7 && err.Error()[:7] == "no node":
 			code = http.StatusServiceUnavailable
+			o.retryAfter(w)
 		}
 		http.Error(w, err.Error(), code)
 		return

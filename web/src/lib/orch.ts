@@ -1,6 +1,6 @@
 // Server-side client for the orchestrator's internal API. The orchestrator
 // token never leaves the server.
-export type OrchResult<T> = { status: number; ok: boolean; data: T; error?: string };
+export type OrchResult<T> = { status: number; ok: boolean; data: T; error?: string; retryAfter?: string };
 
 export async function orch<T = unknown>(method: string, path: string, body?: unknown): Promise<OrchResult<T>> {
   const res = await fetch(`${process.env.ORCHESTRATOR_URL}${path}`, {
@@ -12,7 +12,7 @@ export async function orch<T = unknown>(method: string, path: string, body?: unk
   const text = await res.text();
   let data: unknown = null;
   try { data = text ? JSON.parse(text) : null; } catch { /* plain-text error */ }
-  return { status: res.status, ok: res.ok, data: data as T, error: res.ok ? undefined : text.trim() };
+  return { status: res.status, ok: res.ok, data: data as T, error: res.ok ? undefined : text.trim(), retryAfter: res.headers.get('retry-after') ?? undefined };
 }
 
 // The orchestrator's session shape, and the public one (camelCase).

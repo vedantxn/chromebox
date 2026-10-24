@@ -27,8 +27,13 @@ gw_ip=$(priv gateway)
 nodes=$(grep '^node-' <<<"$names" || true)
 
 echo "== gateway ($gw_ip)"
+# A GRE tunnel is stateless, and a stopped instance keeps its private address,
+# so the gateway gets a tunnel to every node, running or not: a node the
+# autoscaler starts finds its tunnel ready.
 tunnels=""
-for n in $nodes; do tunnels+="$n $(priv "$n")"$'\n'; done
+all_nodes=$(aws ec2 describe-instances --filters Name=tag:Project,Values=chromebox "Name=instance-state-name,Values=running,stopped,stopping,pending" \
+  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,PrivateIpAddress]' --output text | sed 's/^chromebox-//' | grep '^node-' | sort || true)
+while read -r name ip; do [ -n "$name" ] && tunnels+="$name $ip"$'\n'; done <<<"$all_nodes"
 scripts/aws/nodes.sh ssh gateway "GW_IP=$gw_ip bash -s" <<EOS
 set -euo pipefail
 sudo modprobe ip_gre

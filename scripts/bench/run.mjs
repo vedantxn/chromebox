@@ -8,6 +8,8 @@
 //   migration  post-copy migrations of a VM under a live CDP client (n=20)
 //   fork       fork a browser into 1 and into 3 copies (n=5 each)
 //   density    memory per fresh VM and per fork copy (3 of each)
+//   pause      pause a browser to S3 and resume it, 10 round trips
+//   profile    save a profile, then start sessions from it (needs KEY)
 //
 // Environment: ORCH (orchestrator URL), GW (gateway private IP), TOKEN (orchestrator
 // token), API (public site), KEY (an API key, for "public").
@@ -189,6 +191,65 @@ if (run('density')) {
     fork_image_mib: f.image_mib, guest_memory_mib: 1024, fork_errors: f.errors ?? [],
   };
   for (const v of [parent, ...f.copies]) await del(v.id);
+}
+
+if (run('pause')) {
+  log('pause and resume: 10 round trips');
+  const vm = (await create()).vm;
+  const b = await chromium.connectOverCDP(cdp(vm));
+  const pg = b.contexts()[0].pages()[0] ?? (await b.contexts()[0].newPage());
+  await pg.goto('https://example.com');
+  await b.close();
+  const paused = [], upload = [], pauseTotal = [], resumeTotal = [], download = [], stored = [];
+  for (let i = 0; i < 10; i++) {
+    const p = await orch('POST', `/v1/vms/${vm.id}/pause`);
+    paused.push(p.paused_ms); upload.push(p.upload_ms); pauseTotal.push(p.total_ms); stored.push(p.stored_mib);
+    await sleep(1000);
+    const r = await orch('POST', `/v1/vms/${vm.id}/resume`);
+    resumeTotal.push(r.total_ms); download.push(r.download_ms);
+    await sleep(1000);
+  }
+  out.tests.pause_resume = {
+    what: 'pause a Chrome with a page open to S3 and resume it (the node may differ each time), 10 round trips; the guest clock is set on resume',
+    pause_total: result('ms', pauseTotal), browser_stopped_for_snapshot: result('ms', paused), upload: result('ms', upload),
+    resume_total: result('ms', resumeTotal), resume_download: result('ms', download), stored_mib: result('MiB', stored),
+  };
+  await del(vm.id);
+}
+
+if (run('profile') && KEY) {
+  log('profile: save, then 8 sessions from it');
+  const h = { Authorization: `Bearer ${KEY}`, 'content-type': 'application/json' };
+  const api = async (method, path, body) => {
+    const r = await fetch(`${API}/api/v1${path}`, { method, headers: h, body: body && JSON.stringify(body) });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`${method} ${path}: ${r.status} ${text}`);
+    return text ? JSON.parse(text) : null;
+  };
+  const s = await api('POST', '/sessions');
+  const b = await chromium.connectOverCDP(s.connectUrl);
+  const pg = b.contexts()[0].pages()[0] ?? (await b.contexts()[0].newPage());
+  await pg.goto('https://httpbin.org/cookies/set?session=bench');
+  await b.close();
+  const t0 = performance.now();
+  const saved = await api('POST', '/profiles', { session: s.id, name: 'bench' });
+  const saveMs = performance.now() - t0;
+  await api('DELETE', `/sessions/${s.id}`);
+  const first = [], later = [];
+  for (let i = 0; i < 8; i++) {
+    const start = Date.now();
+    const t = performance.now();
+    const n = await api('POST', '/sessions', { profile: 'bench' });
+    (i === 0 ? first : later).push(performance.now() - t);
+    await api('DELETE', `/sessions/${n.id}`);
+    await sleep(Math.max(0, 6500 - (Date.now() - start)));
+  }
+  await api('DELETE', '/profiles/bench');
+  out.tests.profile = {
+    what: 'save a logged-in browser as a profile, then start sessions from it through the public API (create request to ready; the first fetches the profile to a node)',
+    save: { ms: +saveMs.toFixed(0), browser_paused_ms: saved.pausedMs, stored_mib: saved.storedMiB },
+    first_session: result('ms', first), later_sessions: result('ms', later),
+  };
 }
 
 out.finished_at = new Date().toISOString();

@@ -39,6 +39,9 @@ type Config struct {
 	PublicURL        string        // how clients reach the proxy, e.g. "https://xxxx.cloudfront.net"
 	Strategy         Strategy      // placement
 	HeartbeatTimeout time.Duration // a node silent for longer is down
+
+	Autoscale AutoscaleConfig // start and stop nodes by load (off unless enabled)
+	Instances Instances       // the machines behind nodes; needed when Autoscale is enabled
 }
 
 type nodeState struct {
@@ -65,6 +68,7 @@ type Orchestrator struct {
 	started time.Time
 
 	metrics *metrics
+	auto    *autoscaler // nil unless autoscaling is enabled
 }
 
 func New(cfg Config) (*Orchestrator, error) {
@@ -83,6 +87,9 @@ func New(cfg Config) (*Orchestrator, error) {
 	}
 	o := &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}, gone: map[string]time.Time{}, started: time.Now()}
 	o.metrics = newMetrics(o)
+	if cfg.Autoscale.Enabled && cfg.Instances != nil {
+		o.auto = newAutoscaler(o, cfg.Autoscale, cfg.Instances)
+	}
 	return o, nil
 }
 
@@ -90,6 +97,11 @@ func New(cfg Config) (*Orchestrator, error) {
 func (o *Orchestrator) Run(ctx context.Context) error {
 	api := &http.Server{Addr: o.cfg.APIListen, Handler: o.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go o.reconcileLoop(ctx)
+	if o.auto != nil {
+		go o.auto.run(ctx)
+		log.Printf("orchestrator: autoscaling on (always on: %s, at most %d nodes, cooldown %s, idle stop %s)",
+			o.cfg.Autoscale.AlwaysOn, o.cfg.Autoscale.MaxNodes, o.cfg.Autoscale.Cooldown, o.cfg.Autoscale.IdleStop)
+	}
 	errc := make(chan error, 1)
 	go func() { errc <- api.ListenAndServe() }()
 	log.Printf("orchestrator: API on %s, strategy %s, max VMs %d", o.cfg.APIListen, o.cfg.Strategy, o.cfg.MaxVMs)
@@ -107,6 +119,7 @@ func (o *Orchestrator) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
 	mux.HandleFunc("POST /v1/heartbeat", o.heartbeat)
 	mux.Handle("GET /metrics", o.metrics.handler())
+	mux.HandleFunc("GET /v1/stats", o.stats)
 	mux.HandleFunc("POST /v1/vms", o.createVM)
 	mux.HandleFunc("GET /v1/vms", o.listVMs)
 	mux.HandleFunc("DELETE /v1/vms/{id}", o.deleteVM)
@@ -237,6 +250,9 @@ func (o *Orchestrator) Create(ctx context.Context, baseName string, ttl time.Dur
 	vm, resp, err := o.create(ctx, baseName, ttl, onReserve...)
 	if err != nil {
 		o.metrics.errors.WithLabelValues("create").Inc()
+		if strings.HasPrefix(err.Error(), "no node") {
+			o.auto.Pressure() // nil-safe: starts a node, if autoscaling is on
+		}
 		return vm, resp, err
 	}
 	d := time.Since(start)
@@ -426,7 +442,8 @@ func (o *Orchestrator) listNodes(w http.ResponseWriter, r *http.Request) {
 	for _, n := range rows {
 		s := o.seen[n.Name]
 		out = append(out, api.Node{Name: n.Name, Up: !s.Seen.IsZero() && time.Since(s.Seen) < o.cfg.HeartbeatTimeout,
-			Cordoned: n.Cordoned, VMs: count[n.Name], CapMemMiB: s.Status.CapMemMiB, UsedMiB: used[n.Name], AgentURL: n.AgentURL})
+			Cordoned: n.Cordoned, VMs: count[n.Name], CapMemMiB: s.Status.CapMemMiB, UsedMiB: used[n.Name], AgentURL: n.AgentURL,
+			State: o.auto.NodeState(n.Name)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	writeJSON(w, http.StatusOK, out)

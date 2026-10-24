@@ -51,7 +51,7 @@ Puppeteer works too: `puppeteer.connect({ browserWSEndpoint: session.connectUrl 
 | `session.close()` | end it |
 | `baton.usage()` | running sessions and minutes used today |
 
-Errors are `BatonError` with `status`: `401` bad key, `429` over a limit, `503` at capacity.
+Errors are `BatonError` with `status`: `401` bad key, `429` over a limit, `503` at capacity. When every machine is full and a new one is starting, `sessions.create()` and `resume()` wait for it (about a minute) instead of failing.
 
 ## Limits (free)
 

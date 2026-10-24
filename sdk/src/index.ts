@@ -169,7 +169,7 @@ export class Baton {
   readonly sessions = {
     /** Start a browser, optionally from a saved profile (logged in, on the pages it was saved on). */
     create: async (opts: { profile?: string } = {}): Promise<Session> =>
-      new Session(this, await this.request<SessionData>('POST', '/api/v1/sessions', opts.profile ? { profile: opts.profile } : undefined)),
+      new Session(this, await this.request<SessionData>('POST', '/api/v1/sessions', opts.profile ? { profile: opts.profile } : undefined, { waitForCapacity: true })),
     list: async (): Promise<Session[]> =>
       (await this.request<SessionData[]>('GET', '/api/v1/sessions')).map((s) => new Session(this, s)),
     get: async (id: string): Promise<Session> => new Session(this, await this.request<SessionData>('GET', `/api/v1/sessions/${id}`)),
@@ -179,7 +179,7 @@ export class Baton {
     migrate: (id: string): Promise<Migration> => this.request<Migration>('POST', `/api/v1/sessions/${id}/migrate`),
     pause: (id: string): Promise<Pause> => this.request<Pause>('POST', `/api/v1/sessions/${id}/pause`),
     resume: async (id: string): Promise<Session> =>
-      new Session(this, await this.request<SessionData & { resumeMs?: number }>('POST', `/api/v1/sessions/${id}/resume`)),
+      new Session(this, await this.request<SessionData & { resumeMs?: number }>('POST', `/api/v1/sessions/${id}/resume`, undefined, { waitForCapacity: true })),
     fork: async (id: string, count = 1): Promise<Fork> => {
       const f = await this.request<Omit<Fork, 'sessions'> & { sessions: SessionData[] }>('POST', `/api/v1/sessions/${id}/fork`, { count });
       return { ...f, sessions: f.sessions.map((s) => new Session(this, s)) };
@@ -200,10 +200,20 @@ export class Baton {
   }
 
   /** @internal */
-  async request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+  async request<T = unknown>(method: string, path: string, body?: unknown, opts: { waitForCapacity?: boolean } = {}): Promise<T> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.apiKey}` };
     if (body !== undefined) headers['content-type'] = 'application/json';
-    const res = await fetch(this.baseUrl + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    // When every machine is full and one is being started, the API answers 503
+    // with Retry-After. Starting or resuming a session waits for it (up to
+    // 3 minutes) instead of failing: the new machine is up in about a minute.
+    const giveUp = Date.now() + 180_000;
+    let res: Response;
+    for (;;) {
+      res = await fetch(this.baseUrl + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const wait = Number(res.headers.get('retry-after'));
+      if (res.status !== 503 || !opts.waitForCapacity || !wait || Date.now() > giveUp) break;
+      await new Promise((r) => setTimeout(r, Math.min(wait, 15) * 1000));
+    }
     if (res.status === 204) return undefined as T;
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new BatonError((data as { error?: string }).error ?? res.statusText, res.status);

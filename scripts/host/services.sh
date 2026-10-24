@@ -78,7 +78,8 @@ sudo chmod 600 /etc/chromebox/env
 sudo tee /etc/systemd/system/chromebox-agent.service >/dev/null <<'U'
 [Unit]
 Description=chromebox node agent
-After=network-online.target
+After=network-online.target chromebox-node.service chromebox-cgroup.service
+Wants=chromebox-node.service chromebox-cgroup.service
 [Service]
 User=ec2-user
 EnvironmentFile=/etc/chromebox/env
