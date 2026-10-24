@@ -6,7 +6,7 @@ type Start = { deviceCode: string; userCode: string; verificationUri: string; in
 
 // Sign in with GitHub's device flow: show the code, send the user to GitHub to
 // enter it, and check back every few seconds until GitHub says yes or no.
-export default function SignIn() {
+export function useDeviceSignIn() {
   const [start, setStart] = useState<Start | null>(null);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
@@ -32,7 +32,13 @@ export default function SignIn() {
     setError('The code expired. Try again.');
     setStart(null);
   };
+  const copy = () => start && navigator.clipboard.writeText(start.userCode).then(() => setCopied(true));
+  const cancel = () => setStart(null);
+  return { start, error, copied, begin, copy, cancel };
+}
 
+export default function SignIn() {
+  const { start, error, copied, begin, copy } = useDeviceSignIn();
   if (!start) {
     return (
       <div>
@@ -46,9 +52,7 @@ export default function SignIn() {
   return (
     <div className="rounded-lg border border-zinc-200 p-4 text-sm dark:border-zinc-800">
       <p>Enter this code on GitHub:</p>
-      <button
-        onClick={() => navigator.clipboard.writeText(start.userCode).then(() => setCopied(true))}
-        className="mt-2 font-mono text-2xl font-semibold tracking-widest" title="Copy">
+      <button onClick={copy} className="mt-2 font-mono text-2xl font-semibold tracking-widest" title="Copy">
         {start.userCode}
       </button>
       <span className="ml-2 text-xs text-zinc-500">{copied ? 'copied' : 'click to copy'}</span>

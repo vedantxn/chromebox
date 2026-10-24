@@ -18,3 +18,7 @@ sdk/dist/
 
 # The snapshot bucket name (it embeds the AWS account id); scripts/aws/storage.sh writes it.
 scripts/aws/bucket.txt
+
+# Design-tool working files and raw downloads for the landing page (the used copies live in web/public/landing)
+web/.taste-skill/
+web/assets/
