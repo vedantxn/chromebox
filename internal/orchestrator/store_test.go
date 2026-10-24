@@ -18,7 +18,7 @@ func openTest(t *testing.T) *Store {
 	return s
 }
 
-func TestIndexIsTheLowestFreeAndNeverShared(t *testing.T) {
+func TestIndexesAreHandedOutRoundRobinAndNeverShared(t *testing.T) {
 	s := openTest(t)
 	a, _ := s.InsertVM("a", "node-a", "chrome", 1024, time.Time{})
 	b, _ := s.InsertVM("b", "node-a", "chrome", 1024, time.Time{})
@@ -28,8 +28,25 @@ func TestIndexIsTheLowestFreeAndNeverShared(t *testing.T) {
 	}
 	s.DeleteVM("b") // frees 2
 	d, _ := s.InsertVM("d", "node-b", "chrome", 1024, time.Time{})
-	if d.NetIndex != 2 {
-		t.Fatalf("a freed index should be reused first: got %d", d.NetIndex)
+	if d.NetIndex != 4 {
+		t.Fatalf("a freed index must not come straight back (its process may still be exiting): got %d, want 4", d.NetIndex)
+	}
+}
+
+func TestIndexesWrapAroundAndFindTheFreeOnes(t *testing.T) {
+	s := openTest(t)
+	s.lastIdx = maxUserIndex - 1
+	a, _ := s.InsertVM("a", "n", "chrome", 1, time.Time{}) // the last index
+	b, _ := s.InsertVM("b", "n", "chrome", 1, time.Time{}) // wraps to the first
+	c, _ := s.InsertVM("c", "n", "chrome", 1, time.Time{})
+	if a.NetIndex != maxUserIndex || b.NetIndex != 1 || c.NetIndex != 2 {
+		t.Fatalf("indexes %d %d %d", a.NetIndex, b.NetIndex, c.NetIndex)
+	}
+	s.DeleteVM("b") // frees 1; 2 and maxUserIndex stay taken
+	s.lastIdx = maxUserIndex
+	d, _ := s.InsertVM("d", "n", "chrome", 1, time.Time{})
+	if d.NetIndex != 1 {
+		t.Fatalf("wrapping round should find the free index 1, got %d", d.NetIndex)
 	}
 }
 

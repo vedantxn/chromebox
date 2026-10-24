@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/firecracker"
+	"github.com/vedantxn/chromebox/internal/netsetup"
 )
 
 // DrivePath is where every Firecracker process sees its VM's disk. A snapshot
@@ -30,7 +31,10 @@ const JailBase = "/srv/jailer"
 // jailName is the jailer id VM p runs under: its own id, or for a VM made
 // from a pool slot, the slot's (recorded in the VM directory when the jail is
 // made, so it follows the directory when it is renamed).
-func jailName(p Paths) string {
+func jailName(p Paths) string { return JailNameOf(p) }
+
+// JailNameOf is the name of the jail VM p runs in.
+func JailNameOf(p Paths) string {
 	if b, err := os.ReadFile(filepath.Join(p.Dir, "jail")); err == nil {
 		return strings.TrimSpace(string(b))
 	}
@@ -188,22 +192,162 @@ func StartProcess(ctx context.Context, p Paths, readOnly ...string) (*firecracke
 // lived only in the VM's private mount namespace, so with the process gone
 // the directory holds plain files (a copy of the binary, empty mount points);
 // --one-file-system makes sure nothing outside it could ever be reached.
-func removeJail(p Paths) {
-	if _, err := os.Stat(filepath.Dir(jailRoot(p))); err == nil {
-		_ = exec.Command("sudo", "rm", "-rf", "--one-file-system", filepath.Dir(jailRoot(p))).Run()
+func removeJail(p Paths) { removeJailDirs(filepath.Dir(jailRoot(p)), cgroupDir(p)) }
+
+func removeJailDirs(jail, cgroup string) {
+	if _, err := os.Stat(jail); err == nil {
+		_ = exec.Command("sudo", "rm", "-rf", "--one-file-system", jail).Run()
 	}
-	if _, err := os.Stat(cgroupDir(p)); err != nil {
+	if _, err := os.Stat(cgroup); err != nil {
 		return
 	}
 	for i := 0; i < 20; i++ { // the cgroup empties a moment after the process dies
-		if err := exec.Command("sudo", "rmdir", cgroupDir(p)).Run(); err == nil {
+		if err := exec.Command("sudo", "rmdir", cgroup).Run(); err == nil {
 			break
 		}
-		if _, err := os.Stat(cgroupDir(p)); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(cgroup); errors.Is(err, os.ErrNotExist) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// Remains is what a stopped VM still holds on the host: its jail, its cgroup
+// and its TAP device. Clean removes them and may run some time after Stop,
+// because nothing else uses them: the jail and cgroup are named for this VM,
+// and the TAP, which every VM with the same index shares, is left alone if a
+// newer VM has claimed it by then.
+type Remains struct {
+	jail, cgroup string
+	tap          *netsetup.Net
+	claims       uint64
+}
+
+// Stop kills VM p's process and returns what Clean must still remove. It reads everything it needs from the VM's directory
+// first, so the directory can be deleted straight away.
+func Stop(p Paths) (Remains, error) {
+	r := Remains{jail: filepath.Dir(jailRoot(p)), cgroup: cgroupDir(p)}
+	if nn, err := NetOf(p); err == nil && nn != nil {
+		r.tap, r.claims = nn, nn.Claims()
+	}
+	pid := pidOf(p)
+	err := killProcess(p)
+	if r.tap != nil {
+		// The process gives up the TAP late in exiting (about 100 ms for a
+		// 1 GiB guest), so a delete does not wait for it: whoever next takes
+		// the index does, if the process is still there by then.
+		r.tap.SetBusy(func() {
+			waitExited(pid, 2*time.Second)
+			waitEmpty(r.cgroup, time.Second)
+		})
+	}
+	return r, err
+}
+
+// pidOf is the pid recorded for VM p, or 0.
+func pidOf(p Paths) int {
+	b, err := os.ReadFile(p.PIDFile())
+	if err != nil {
+		return 0
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	return pid
+}
+
+// waitExited returns when process pid has finished exiting, or after d. A
+// killed process gives up its file descriptors, the TAP device among them,
+// only late in exiting, after its memory is torn down; the next VM with the
+// same index opens that device, so Stop must not return before then. The
+// process counts as gone when /proc has no entry for it, or it is a zombie
+// with no thread left.
+func waitExited(pid int, d time.Duration) {
+	if pid <= 0 {
+		return
+	}
+	dir := "/proc/" + strconv.Itoa(pid)
+	for deadline := time.Now().Add(d); time.Now().Before(deadline); time.Sleep(500 * time.Microsecond) {
+		b, err := os.ReadFile(dir + "/stat")
+		if err != nil {
+			return
+		}
+		// "pid (comm) S ...": the state follows the last ")".
+		if i := strings.LastIndexByte(string(b), ')'); i >= 0 && i+2 < len(b) && b[i+2] == 'Z' {
+			if tasks, err := os.ReadDir(dir + "/task"); err != nil || len(tasks) <= 1 {
+				return
+			}
+		}
+	}
+}
+
+// waitEmpty returns when no process is left in cgroup, or after d.
+func waitEmpty(cgroup string, d time.Duration) {
+	procs := filepath.Join(cgroup, "cgroup.procs")
+	for deadline := time.Now().Add(d); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		b, err := os.ReadFile(procs)
+		if err != nil || strings.TrimSpace(string(b)) == "" {
+			return
+		}
+	}
+}
+
+// Clean removes what Stop left behind. It runs at the lowest CPU priority and
+// as one `sudo`, because it overlaps with whatever the node is doing for other
+// sessions, creating browsers among it.
+func (r Remains) Clean() {
+	removeJailQuietly(r.jail, r.cgroup)
+	if r.tap != nil {
+		_ = r.tap.DeleteTapUnlessReclaimed(r.claims)
+	}
+}
+
+// removeJailQuietly is removeJailDirs in a single low-priority process: remove
+// the jail, then the cgroup, which can only be removed once the VM's process
+// has left it (retried for up to 200 ms).
+func removeJailQuietly(jail, cgroup string) {
+	script := `rm -rf --one-file-system "$1"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  rmdir "$2" 2>/dev/null && exit 0
+  [ -d "$2" ] || exit 0
+  sleep 0.01
+done`
+	_ = exec.Command("sudo", "nice", "-n", "19", "sh", "-c", script, "sh", jail, cgroup).Run()
+}
+
+// SweepJails removes the jails and cgroups of VMs that are gone: the ones in
+// the jailer's directory that keep does not claim and whose cgroup holds no
+// process. Clean runs in the background, so an agent that stopped in the
+// middle of one leaves its work for this.
+func SweepJails(keep func(name string) bool) int {
+	entries, _ := os.ReadDir(filepath.Join(JailBase, "firecracker"))
+	n := 0
+	for _, e := range entries {
+		if keep(e.Name()) {
+			continue
+		}
+		cg := filepath.Join("/sys/fs/cgroup/chromebox", e.Name())
+		if b, err := os.ReadFile(filepath.Join(cg, "cgroup.procs")); err == nil && strings.TrimSpace(string(b)) != "" {
+			continue // something still runs in it
+		}
+		removeJailDirs(filepath.Join(JailBase, "firecracker", e.Name()), cg)
+		n++
+	}
+	// Cgroups whose jail is already gone.
+	groups, _ := os.ReadDir("/sys/fs/cgroup/chromebox")
+	for _, e := range groups {
+		if !e.IsDir() || keep(e.Name()) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(JailBase, "firecracker", e.Name())); err == nil {
+			continue // its jail is there: handled above, or kept
+		}
+		cg := filepath.Join("/sys/fs/cgroup/chromebox", e.Name())
+		if b, err := os.ReadFile(filepath.Join(cg, "cgroup.procs")); err == nil && strings.TrimSpace(string(b)) != "" {
+			continue
+		}
+		removeJailDirs(filepath.Join(JailBase, "firecracker", e.Name()), cg)
+		n++
+	}
+	return n
 }
 
 // waitForSocket polls until something accepts connections on path.

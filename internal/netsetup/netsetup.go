@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // guestRange is where all guest addresses live. Each VM gets a /30 inside it.
@@ -20,6 +21,41 @@ var guestRange = netip.MustParseAddr("10.200.0.0")
 // MaxIndex is the highest VM index: 65536 addresses in a /16, four per VM,
 // minus the first block, which is not used.
 const MaxIndex = 16383
+
+// tapEntry guards one index's TAP device and counts how often a VM has claimed
+// it (EnsureTap). A TAP is shared by every VM that ever has the index, so a
+// delete that was put off (DeleteTapUnlessReclaimed) must not remove a device
+// that a newer VM has since taken over.
+type tapEntry struct {
+	mu     sync.Mutex
+	claims uint64
+	busy   func() // set while the last VM with this index is still exiting
+}
+
+var tapEntries sync.Map // index -> *tapEntry
+
+func (n Net) entry() *tapEntry {
+	e, _ := tapEntries.LoadOrStore(n.Index, &tapEntry{})
+	return e.(*tapEntry)
+}
+
+// SetBusy records that the VM which last used this index is still exiting
+// and holds the TAP: wait returns when it has let go. The next EnsureTap for
+// the index calls it first, once, so a delete need not wait for it.
+func (n Net) SetBusy(wait func()) {
+	e := n.entry()
+	e.mu.Lock()
+	e.busy = wait
+	e.mu.Unlock()
+}
+
+// Claims is how many times a VM has claimed this index's TAP so far.
+func (n Net) Claims() uint64 {
+	e := n.entry()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.claims
+}
 
 // Net is one VM's network identity.
 type Net struct {
@@ -87,6 +123,14 @@ func addrPlus(a netip.Addr, delta int) netip.Addr {
 // neighbor (ARP) cache from before the move. If the new node's TAP had a
 // different MAC, the guest would keep sending to an address nobody answers to.
 func (n Net) EnsureTap(uid, gid int) error {
+	e := n.entry()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.busy != nil {
+		e.busy()
+		e.busy = nil
+	}
+	e.claims++
 	var cmds []string
 	if _, err := net.InterfaceByName(n.TapName); err != nil {
 		cmds = append(cmds, fmt.Sprintf("tuntap add dev %s mode tap user %d group %d", n.TapName, uid, gid))
@@ -100,16 +144,58 @@ func (n Net) EnsureTap(uid, gid int) error {
 		fmt.Sprintf("addr replace %s/30 dev %s", n.TapIP, n.TapName),
 		fmt.Sprintf("link set dev %s up", n.TapName),
 	)
-	return ipBatch(cmds)
+	return ipRun(cmds)
 }
 
 // DeleteTap removes the TAP device. A missing device is not an error.
 func (n Net) DeleteTap() error {
+	e := n.entry()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return n.deleteTap()
+}
+
+// DeleteTapUnlessReclaimed is DeleteTap for a delete that was put off: claims
+// is what Claims returned when the VM stopped. If a VM has claimed the TAP
+// since (it has the same index), the device is that VM's now and stays.
+func (n Net) DeleteTapUnlessReclaimed(claims uint64) error {
+	e := n.entry()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.claims != claims {
+		return nil
+	}
 	if _, err := net.InterfaceByName(n.TapName); err != nil {
 		return nil
 	}
-	return ipBatch([]string{fmt.Sprintf("link del %s", n.TapName)})
+	return ipRunLow([]string{fmt.Sprintf("link del %s", n.TapName)})
 }
+
+func (n Net) deleteTap() error {
+	if _, err := net.InterfaceByName(n.TapName); err != nil {
+		return nil
+	}
+	return ipRun([]string{fmt.Sprintf("link del %s", n.TapName)})
+}
+
+// ipBatchLowPriority is ipBatch at the lowest CPU priority, for work that is
+// not on anyone's request path.
+func ipBatchLowPriority(cmds []string) error {
+	c := exec.Command("sudo", "nice", "-n", "19", "ip", "-batch", "-")
+	c.Stdin = strings.NewReader(strings.Join(cmds, "\n") + "\n")
+	var out bytes.Buffer
+	c.Stdout, c.Stderr = &out, &out
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("ip %v: %w: %s", cmds, err, bytes.TrimSpace(out.Bytes()))
+	}
+	return nil
+}
+
+// ipRun is ipBatch, replaceable in tests.
+var ipRun = ipBatch
+
+// ipRunLow is ipBatchLowPriority, replaceable in tests.
+var ipRunLow = ipBatchLowPriority
 
 // ipBatch runs several `ip` commands in one process (one sudo, one exec).
 func ipBatch(cmds []string) error {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver: no cgo, so cross-compiling stays trivial
@@ -28,7 +29,12 @@ const maxUserIndex = 16000
 
 // Store is the orchestrator's database: what *should* exist. The agents say
 // what actually runs, and the reconciler brings the two together.
-type Store struct{ db *sql.DB }
+type Store struct {
+	db *sql.DB
+
+	idxMu   sync.Mutex
+	lastIdx int // the network index handed out last (see InsertVM)
+}
 
 // Open opens (creating if needed) the database at path.
 func Open(path string) (*Store, error) {
@@ -69,8 +75,11 @@ func (s *Store) Close() error { return s.db.Close() }
 
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
-// InsertVM records a new VM on node, in state creating, and gives it the
-// lowest network index nobody holds. Both happen in one transaction, so two
+// InsertVM records a new VM on node, in state creating, and gives it a network
+// index nobody holds: the first free one after the index handed out last,
+// wrapping round. Reusing the lowest free index instead would hand a new VM
+// the address of one deleted a moment ago, whose process may still be exiting
+// and holding its TAP device. All of it happens in one transaction, so two
 // concurrent creates can never be given the same address.
 func (s *Store) InsertVM(id, node, base string, memMiB int, expires time.Time) (api.VM, error) {
 	tx, err := s.db.Begin()
@@ -78,25 +87,30 @@ func (s *Store) InsertVM(id, node, base string, memMiB int, expires time.Time) (
 		return api.VM{}, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.Query(`SELECT net_index FROM vms ORDER BY net_index`)
+	rows, err := tx.Query(`SELECT net_index FROM vms`)
 	if err != nil {
 		return api.VM{}, err
 	}
-	idx := 1
+	used := map[int]bool{}
 	for rows.Next() {
-		var used int
-		if err := rows.Scan(&used); err != nil {
+		var n int
+		if err := rows.Scan(&n); err != nil {
 			rows.Close()
 			return api.VM{}, err
 		}
-		if used == idx {
-			idx++
-		} else if used > idx {
+		used[n] = true
+	}
+	rows.Close()
+	s.idxMu.Lock()
+	defer s.idxMu.Unlock()
+	idx := 0
+	for i := 1; i <= maxUserIndex; i++ {
+		if c := (s.lastIdx+i-1)%maxUserIndex + 1; !used[c] {
+			idx = c
 			break
 		}
 	}
-	rows.Close()
-	if idx > maxUserIndex {
+	if idx == 0 {
 		return api.VM{}, errors.New("no network addresses left")
 	}
 	t := now()
@@ -111,6 +125,7 @@ func (s *Store) InsertVM(id, node, base string, memMiB int, expires time.Time) (
 	if err := tx.Commit(); err != nil {
 		return api.VM{}, err
 	}
+	s.lastIdx = idx
 	return api.VM{ID: id, NetIndex: idx, Node: node, Base: base, State: StateCreating, MemMiB: memMiB, Created: t, Expires: exp}, nil
 }
 

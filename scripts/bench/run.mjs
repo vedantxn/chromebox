@@ -16,6 +16,7 @@
 import { chromium } from 'playwright-core';
 
 const { ORCH, GW, TOKEN, API, KEY } = process.env;
+const FRESH_GAP_MS = Number(process.env.FRESH_GAP_MS ?? 0); // pause after each delete in the fresh test
 const want = process.argv.slice(2);
 const run = (t) => want.length === 0 || want.includes(t);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -62,6 +63,7 @@ if (run('fresh')) {
     const r = await create();
     total.push(r.total_ms);
     await del(r.vm.id);
+    if (FRESH_GAP_MS) await sleep(FRESH_GAP_MS); // a deleted VM finishes being removed in the background
   }
   out.tests.fresh = { what: 'orchestrator create: request -> Chrome answering CDP, gateway route set (server-side time)', ...result('ms', total) };
 }

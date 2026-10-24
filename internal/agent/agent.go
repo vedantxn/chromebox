@@ -53,7 +53,8 @@ type Agent struct {
 	outMu    sync.Mutex
 	outgoing map[string]*outgoing // post-copy migrations still serving memory
 
-	pool    *pool // jailed Firecracker processes started ahead of time
+	pool    *pool    // jailed Firecracker processes started ahead of time
+	cleaner *cleaner // removes what deleted VMs left behind, off the request path
 	metrics *agentMetrics
 	snaps   *snapstore.Store // snapshots in S3; nil without CHROMEBOX_SNAP_BUCKET
 }
@@ -67,7 +68,7 @@ type outgoing struct {
 }
 
 func New(cfg Config) *Agent {
-	a := &Agent{cfg: cfg, outgoing: map[string]*outgoing{}}
+	a := &Agent{cfg: cfg, outgoing: map[string]*outgoing{}, cleaner: newCleaner()}
 	if p := newPool(); p.size > 0 {
 		a.pool = p
 	}
@@ -81,6 +82,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	srv := &http.Server{Addr: a.cfg.Listen, Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
+	go a.sweepJails()
 	if a.cfg.Orchestrator != "" {
 		go a.heartbeats(ctx)
 	}
@@ -93,6 +95,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	select {
 	case <-ctx.Done():
+		a.cleaner.wait(10 * time.Second) // let deleted VMs finish being removed
 		return srv.Shutdown(context.Background())
 	case err := <-errc:
 		return err
@@ -167,9 +170,29 @@ func (a *Agent) createVM(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, api.CreateVMResponse{Laps: sw.Record()})
 }
 
+// deleteVM stops the VM and answers; its jail, cgroup and TAP device, about
+// 150 ms of removal, are cleared in the background. By the time this returns
+// the VM no longer runs, is no longer listed, and its directories are gone.
 func (a *Agent) deleteVM(w http.ResponseWriter, r *http.Request) {
-	a.destroy(vm.PathsFor(r.PathValue("id")))
+	p := vm.PathsFor(r.PathValue("id"))
+	remains, _ := vm.Stop(p)
+	_ = os.RemoveAll(p.Dir)
+	_ = os.RemoveAll(p.MemDir())
+	a.cleaner.later(remains.Clean)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// sweepJails clears jails and cgroups that no VM directory refers to: what a
+// restart left half removed. Pool slots are the pool's to manage.
+func (a *Agent) sweepJails() {
+	own := map[string]bool{}
+	entries, _ := os.ReadDir(filepath.Join(vm.StateDir, "vms"))
+	for _, e := range entries {
+		own[vm.JailNameOf(vm.PathsFor(e.Name()))] = true
+	}
+	if n := vm.SweepJails(func(name string) bool { return own[name] || strings.HasPrefix(name, slotPrefix) }); n > 0 {
+		log.Printf("removed %d leftover jails", n)
+	}
 }
 
 // migrateOut is the source half of a migration. It ends with the VM running on

@@ -29,6 +29,10 @@ import (
 type pool struct {
 	base string
 	size int
+	// refillDelay is how long to wait before replacing a claimed slot while
+	// another is still ready: starting one costs ~100 ms of CPU on a node that
+	// has two, just as the browser that claimed it takes its first requests.
+	refillDelay time.Duration
 
 	mu    sync.Mutex
 	ready []vm.Paths
@@ -46,7 +50,11 @@ func newPool() *pool {
 	if b == "" {
 		b = "chrome-v1"
 	}
-	return &pool{base: b, size: size, kick: make(chan struct{}, 1)}
+	delay := 2 * time.Second
+	if v, err := time.ParseDuration(os.Getenv("CHROMEBOX_POOL_REFILL_DELAY")); err == nil {
+		delay = v
+	}
+	return &pool{base: b, size: size, refillDelay: delay, kick: make(chan struct{}, 1)}
 }
 
 // take returns a live slot for base, or false (then the create starts its
@@ -86,6 +94,13 @@ func (pl *pool) run(ctx context.Context, load func(string) error) {
 		case <-ctx.Done():
 			return
 		case <-pl.kick:
+		}
+		if pl.refillDelay > 0 && pl.readyCount() > 0 { // a spare is ready: the new browser goes first
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(pl.refillDelay):
+			}
 		}
 		for {
 			pl.mu.Lock()
