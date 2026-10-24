@@ -75,7 +75,7 @@ EOS
   ;;
 browserbench-wait|arena-wait)
   name=${1%-wait}; out="bench/results/$name-baton-$(date -u +%F).jsonl"
-  until ! on 'pgrep -f "[s]rc/cli.ts --" >/dev/null'; do sleep 20; done
+  until ! on 'pgrep -f "bash [r]un.sh" >/dev/null'; do sleep 20; done
   scp -q -i "$CB_SSH_KEY" "ec2-user@$(ip):bb/baton.jsonl" "$out"
   uid=$(on 'cat bb/uid')
   # Delete the throwaway account: its keys, sessions, events and the user row.

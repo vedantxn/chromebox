@@ -1,13 +1,13 @@
 import { auth } from '@/auth';
-import { orch } from '@/lib/orch';
 
 // Who is calling: an API key (`Authorization: Bearer bk_...`, for scripts and
 // the SDK) or a signed-in dashboard user (session cookie).
 export async function callerId(req: Request): Promise<string | null> {
   const h = req.headers.get('authorization') ?? '';
   if (h.startsWith('Bearer ')) {
-    const r = await orch<{ user_id: string }>('POST', '/v1/keys/verify', { key: h.slice(7) });
-    return r.ok ? r.data.user_id : null;
+    // "me": the orchestrator resolves the key itself, in the same request
+    // (orch() forwards it), instead of a round trip here to ask whose it is.
+    return h.length > 7 ? 'me' : null;
   }
   const s = await auth();
   return s?.uid ?? null;

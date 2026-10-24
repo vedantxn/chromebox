@@ -156,7 +156,7 @@ func (o *Orchestrator) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/nodes/{name}/drain", o.drainNode)
 	mux.HandleFunc("POST /v1/nodes/{name}/cordon", func(w http.ResponseWriter, r *http.Request) { o.cordon(w, r, true) })
 	mux.HandleFunc("POST /v1/nodes/{name}/uncordon", func(w http.ResponseWriter, r *http.Request) { o.cordon(w, r, false) })
-	return o.auth(mux)
+	return o.auth(o.resolveMe(mux))
 }
 
 func (o *Orchestrator) auth(next http.Handler) http.Handler {

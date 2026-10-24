@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import data from '@/data/benchmarks.json';
 import bb from '@/data/browserbench.json';
+import arena from '@/data/arena.json';
 
 // The numbers come from one JSON file written by scripts/bench/run.mjs on a
 // client in us-east-1; nothing here is typed in by hand.
@@ -79,6 +80,56 @@ export default function Benchmarks() {
       <Table title="Fresh start" what={String(t.fresh.what)} rows={[['create', fresh]]} />
       {pub && <Table title="Public path, as a customer" what={String((t.public as { what: string }).what)}
         rows={[['create (API)', pub.create], ['connect (CDP)', pub.connect], ['first page', pub.first_page], ['total', pub.total]]} />}
+
+      <section className="mt-10">
+        <h2 className="text-lg font-semibold">Browser Arena&apos;s lifecycle benchmark</h2>
+        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+          The harness behind <a className="underline" href="https://www.browserarena.ai">browserarena.ai</a>{' '}
+          (<a className="underline" href="https://github.com/nottelabs/browserarena">nottelabs/browserarena</a>, MIT) with Baton added as a provider and nothing else changed:
+          create a session, connect over CDP, load example.com, release; 10 warm-ups, then 100 sessions one at a time, from a {arena.client}.
+          The total is theirs: the sum of the stage medians. Raw runs: {arena.runs.map((r, i) => (
+            <span key={r.file}>{i > 0 && ', '}<a className="underline" href={`/${r.file}`}>{r.label}</a></span>))}.
+        </p>
+        <h3 className="mt-4 text-sm font-semibold">One day of work on it, {arena.date}</h3>
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-sm">
+            <thead className="text-zinc-500"><tr>{['', 'create', 'connect', 'load page', 'release', 'total', 'p95'].map((h) => <th key={h} className="pb-2 pr-4 font-normal">{h}</th>)}</tr></thead>
+            <tbody>{arena.runs.map((r, i) => (
+              <tr key={r.label} className={`border-t border-zinc-200 dark:border-zinc-800 ${i === arena.runs.length - 1 ? 'font-semibold' : ''}`}>
+                <td className="py-2 pr-4">{r.label}</td>
+                {[r.create, r.connect, r.load, r.release, r.total, r.p95].map((v, j) => <td key={j} className="py-2 pr-4 tabular-nums">{ms(v)}</td>)}
+              </tr>))}
+            </tbody>
+          </table>
+        </div>
+        <h3 className="mt-6 text-sm font-semibold">Beside the providers Browser Arena publishes raw results for</h3>
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-sm">
+            <thead className="text-zinc-500"><tr>{['', 'create', 'connect', 'load page', 'release', 'total', 'their run'].map((h) => <th key={h} className="pb-2 pr-4 font-normal">{h}</th>)}</tr></thead>
+            <tbody>{[...arena.peers.map((p) => ({ ...p, mine: false })), { provider: 'Baton (measured by us)', date: arena.date, ...arena.runs[arena.runs.length - 1], mine: true }]
+              .sort((a, b) => a.total - b.total).map((p) => (
+                <tr key={p.provider} className={`border-t border-zinc-200 dark:border-zinc-800 ${p.mine ? 'font-semibold' : ''}`}>
+                  <td className="py-2 pr-4">{p.provider}</td>
+                  {[p.create, p.connect, p.load, p.release, p.total].map((v, j) => <td key={j} className="py-2 pr-4 tabular-nums">{ms(v)}</td>)}
+                  <td className="py-2 text-zinc-500">{p.date}</td>
+                </tr>))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+          The other rows are Browser Arena&apos;s own runs (its raw files, the latest one-at-a-time run of each, computed the same way); we did not re-run them.
+          Most are measured from us-east-1 as ours is; Notte from us-west.
+        </p>
+        <h3 className="mt-6 text-sm font-semibold">Where the rest goes, and why we stopped here</h3>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-zinc-600 dark:text-zinc-400">
+          <li>Sessions start from a browser that is already running and warmed up (a pool of one per machine); claiming one is a database update. That took create from 232 to about 60 ms and connect from 262 to about 100.</li>
+          <li>Loading the page is most of what is left, and it is Chrome, not the network: our gateway fetches example.com in about 25 ms. A browser in a VM on nested virtualization pays for every first touch of a memory page (12-17 µs measured) and for every wake-up across CPUs. The fastest provider here loads the page in about 46 ms.</li>
+          <li>About 40 ms of connect is CloudFront, which gives us TLS without a domain of our own.</li>
+          <li>Getting near 150 ms would take bare-metal hosts (EC2 bare metal starts around $4 an hour, per machine, always on) and a TLS endpoint of our own. That is spending, not engineering, so we stopped.</li>
+          <li>The pool&apos;s costs: one idle browser per machine, and a warmed browser has touched more memory, so pausing one stores about 740 MiB instead of 610 (pause 2.2 s instead of 1.9).</li>
+        </ul>
+        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">Notes: <code className="text-sm">docs/learn/first-load.md</code>. Runner, patch and scoring: <code className="text-sm">scripts/bench/browserarena/</code>.</p>
+      </section>
 
       <section className="mt-10">
         <h2 className="text-lg font-semibold">Steel&apos;s remote-browser benchmark</h2>

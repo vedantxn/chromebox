@@ -156,14 +156,40 @@ func (o *Orchestrator) revokeKey(w http.ResponseWriter, r *http.Request) {
 func (o *Orchestrator) verifyKey(w http.ResponseWriter, r *http.Request) {
 	var in struct{ Key string }
 	_ = json.NewDecoder(r.Body).Decode(&in)
-	var uid, login string
-	err := o.store.db.QueryRow(`SELECT k.user_id, u.login FROM api_keys k JOIN users u ON u.id = k.user_id
-		WHERE k.hash = ? AND k.revoked_at = ''`, hashKey(in.Key)).Scan(&uid, &login)
+	uid, login, err := o.keyUser(in.Key)
 	if err != nil {
 		http.Error(w, "invalid API key", http.StatusUnauthorized)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"user_id": uid, "login": login})
+}
+
+// keyUser is the account an API key belongs to, if the key is valid.
+func (o *Orchestrator) keyUser(key string) (uid, login string, err error) {
+	err = o.store.db.QueryRow(`SELECT k.user_id, u.login FROM api_keys k JOIN users u ON u.id = k.user_id
+		WHERE k.hash = ? AND k.revoked_at = ''`, hashKey(key)).Scan(&uid, &login)
+	return uid, login, err
+}
+
+// resolveMe lets the public API act for an API key in one request:
+// /v1/users/me/... with the key in X-Baton-Key is served as the key's account.
+// Before, the site asked who a key belonged to and then acted: two round trips.
+func (o *Orchestrator) resolveMe(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rest, ok := strings.CutPrefix(r.URL.Path, "/v1/users/me/")
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		uid, _, err := o.keyUser(r.Header.Get("X-Baton-Key"))
+		if err != nil {
+			http.Error(w, "invalid API key", http.StatusUnauthorized)
+			return
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path, r2.URL.RawPath = "/v1/users/"+uid+"/"+rest, ""
+		next.ServeHTTP(w, r2)
+	})
 }
 
 // limitError is returned when an account is over one of its limits.

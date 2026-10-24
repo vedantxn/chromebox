@@ -1,0 +1,188 @@
+{
+  "date": "2026-10-24",
+  "client": "t3.small in us-east-1, on a free account",
+  "runs": [
+    {
+      "label": "Start of the day",
+      "file": "arena-baton-2026-10-24-before-async-release.jsonl",
+      "runs": 100,
+      "successful": 100,
+      "create": 244,
+      "connect": 259,
+      "load": 489,
+      "release": 206,
+      "total": 1198,
+      "p95": 1331
+    },
+    {
+      "label": "Release in the background",
+      "file": "arena-baton-2026-10-24-async-release.jsonl",
+      "runs": 100,
+      "successful": 100,
+      "create": 232,
+      "connect": 262,
+      "load": 493,
+      "release": 51,
+      "total": 1038,
+      "p95": 1148
+    },
+    {
+      "label": "Warm pool",
+      "file": "arena-baton-2026-10-24-warm-pool.jsonl",
+      "runs": 100,
+      "successful": 100,
+      "create": 70,
+      "connect": 122,
+      "load": 322.5,
+      "release": 53,
+      "total": 567.5,
+      "p95": 688
+    },
+    {
+      "label": "One-hop API",
+      "file": "arena-baton-2026-10-24-one-hop.jsonl",
+      "runs": 100,
+      "successful": 100,
+      "create": 58,
+      "connect": 99,
+      "load": 270,
+      "release": 43,
+      "total": 470,
+      "p95": 564
+    }
+  ],
+  "peers": [
+    {
+      "provider": "Tilion",
+      "date": "2026-10-22",
+      "runs": 100,
+      "successful": 99,
+      "create": 18,
+      "connect": 77,
+      "load": 46,
+      "release": 15,
+      "total": 156
+    },
+    {
+      "provider": "Notte",
+      "date": "2026-10-24",
+      "runs": 100,
+      "successful": 100,
+      "create": 123.5,
+      "connect": 24,
+      "load": 111.5,
+      "release": 28,
+      "total": 287
+    },
+    {
+      "provider": "Kernel (headful)",
+      "date": "2026-10-22",
+      "runs": 100,
+      "successful": 100,
+      "create": 27,
+      "connect": 68.5,
+      "load": 184,
+      "release": 38,
+      "total": 317.5
+    },
+    {
+      "provider": "Kernel",
+      "date": "2026-10-22",
+      "runs": 100,
+      "successful": 100,
+      "create": 21,
+      "connect": 69.5,
+      "load": 231.5,
+      "release": 39,
+      "total": 361
+    },
+    {
+      "provider": "Browser Use",
+      "date": "2026-10-22",
+      "runs": 100,
+      "successful": 100,
+      "create": 193,
+      "connect": 111,
+      "load": 71.5,
+      "release": 40.5,
+      "total": 416
+    },
+    {
+      "provider": "Lightpanda",
+      "date": "2026-10-24",
+      "runs": 100,
+      "successful": 100,
+      "create": 0,
+      "connect": 293,
+      "load": 170,
+      "release": 20.5,
+      "total": 483.5
+    },
+    {
+      "provider": "Browserbase",
+      "date": "2026-10-22",
+      "runs": 100,
+      "successful": 100,
+      "create": 139,
+      "connect": 222,
+      "load": 121,
+      "release": 112,
+      "total": 594
+    },
+    {
+      "provider": "Cloudflare",
+      "date": "2026-10-22",
+      "runs": 100,
+      "successful": 100,
+      "create": 228.5,
+      "connect": 342.5,
+      "load": 206.5,
+      "release": 105,
+      "total": 882.5
+    },
+    {
+      "provider": "Hyperbrowser",
+      "date": "2026-10-22",
+      "runs": 100,
+      "successful": 100,
+      "create": 211,
+      "connect": 156,
+      "load": 207,
+      "release": 308.5,
+      "total": 882.5
+    },
+    {
+      "provider": "Steel",
+      "date": "2026-10-22",
+      "runs": 100,
+      "successful": 96,
+      "create": 393,
+      "connect": 597.5,
+      "load": 118.5,
+      "release": 156,
+      "total": 1265
+    },
+    {
+      "provider": "Anchor Browser",
+      "date": "2026-10-22",
+      "runs": 100,
+      "successful": 100,
+      "create": 1738.5,
+      "connect": 139,
+      "load": 118.5,
+      "release": 541.5,
+      "total": 2537.5
+    },
+    {
+      "provider": "AWS AgentCore",
+      "date": "2026-10-22",
+      "runs": 100,
+      "successful": 100,
+      "create": 1513.5,
+      "connect": 208,
+      "load": 771.5,
+      "release": 110,
+      "total": 2603
+    }
+  ]
+}
