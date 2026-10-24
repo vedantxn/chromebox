@@ -15,3 +15,6 @@ scripts/demo/*.png
 scripts/aws/token
 scripts/aws/session-secret
 sdk/dist/
+
+# The snapshot bucket name (it embeds the AWS account id); scripts/aws/storage.sh writes it.
+scripts/aws/bucket.txt
