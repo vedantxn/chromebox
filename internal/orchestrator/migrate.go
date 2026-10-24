@@ -39,6 +39,8 @@ type MigrationResult struct {
 // commit (destroy its copy). If anything fails before the route moves, the
 // source is told to abort (resume) and the target's copy is deleted.
 func (o *Orchestrator) Migrate(ctx context.Context, id, target string) (MigrationResult, error) {
+	o.touch() // the pool waits until this is over (see warmQuiet)
+	defer o.touch()
 	res, err := o.migrate(ctx, id, target)
 	if err != nil {
 		o.metrics.migrations.WithLabelValues("failed").Inc()
@@ -163,6 +165,9 @@ func (o *Orchestrator) Drain(ctx context.Context, node string) ([]MigrationResul
 	}
 	var ids []string
 	for _, v := range vms {
+		if v.Node == node && isWarm(v.State) { // nobody's browser yet: not worth moving
+			_ = o.Delete(ctx, v.ID)
+		}
 		if v.Node == node && v.State == StateRunning {
 			ids = append(ids, v.ID)
 		}

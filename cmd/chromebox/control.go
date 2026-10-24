@@ -57,7 +57,7 @@ func runOrchestrator(listen string) error {
 		instances = e
 	}
 	o, err := orchestrator.New(orchestrator.Config{
-		Autoscale: auto, Instances: instances,
+		Autoscale: auto, Instances: instances, Warm: orchestrator.WarmFromEnv(),
 		Token: os.Getenv("CHROMEBOX_TOKEN"), DBPath: "/var/lib/chromebox/orchestrator.db",
 		APIListen: listen, ProxyAdmin: "http://127.0.0.1:9301",
 		SessionSecret: []byte(os.Getenv("CHROMEBOX_SESSION_SECRET")), MaxVMs: maxVMs,

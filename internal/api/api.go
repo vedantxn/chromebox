@@ -145,6 +145,8 @@ type CreateVMResponse struct {
 	Laps timing.Record `json:"laps"` // the node's steps
 	// OrchLaps are the orchestrator's own steps around it (set by the orchestrator).
 	OrchLaps timing.Record `json:"orch_laps"`
+	// Warm is set when the orchestrator handed out a browser from its warm pool.
+	Warm bool `json:"warm,omitempty"`
 }
 
 // VM is a VM as the orchestrator knows it.
@@ -168,6 +170,7 @@ type Node struct {
 	Up        bool   `json:"up"`
 	Cordoned  bool   `json:"cordoned"`
 	VMs       int    `json:"vms"`
+	Warm      int    `json:"warm"` // warm browsers ready to hand out (not counted in VMs)
 	CapMemMiB int    `json:"cap_mem_mib"`
 	UsedMiB   int    `json:"used_mem_mib"`
 	AgentURL  string `json:"agent_url"`

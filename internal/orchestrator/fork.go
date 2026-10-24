@@ -38,6 +38,8 @@ type ForkResult struct {
 // gets its own address and session token, exactly like a fresh browser.
 // onReserve runs for each copy under the placement lock (account limits).
 func (o *Orchestrator) Fork(ctx context.Context, id string, n int, ttl time.Duration, onReserve ...func(id string) error) (ForkResult, error) {
+	o.touch() // the pool waits until this is over (see warmQuiet)
+	defer o.touch()
 	res, err := o.fork(ctx, id, n, ttl, onReserve...)
 	if err != nil {
 		o.metrics.forks.WithLabelValues("failed").Inc()

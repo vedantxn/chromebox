@@ -43,6 +43,8 @@ type ResumeResult struct {
 // Pause snapshots running VM id into storage and stops it. If anything fails
 // the VM keeps running as before.
 func (o *Orchestrator) Pause(ctx context.Context, id string) (PauseResult, error) {
+	o.touch() // the pool waits until this is over (see warmQuiet)
+	defer o.touch()
 	res := PauseResult{VM: id}
 	vm, err := o.store.GetVM(id)
 	if err != nil {
@@ -107,6 +109,8 @@ func (s *Store) markResumed(id string) (undo func()) {
 // not nil, runs under the placement lock before anything is changed (the
 // account limits).
 func (o *Orchestrator) Resume(ctx context.Context, id string, check func() error) (ResumeResult, error) {
+	o.touch() // the pool waits until this is over (see warmQuiet)
+	defer o.touch()
 	res := ResumeResult{VM: id}
 	vm, err := o.store.GetVM(id)
 	if err != nil {

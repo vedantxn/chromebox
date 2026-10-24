@@ -273,3 +273,14 @@ func (s *Store) ListNodes() ([]nodeRow, error) {
 	}
 	return out, rows.Err()
 }
+
+// casState moves VM id from state from to state to, with a new expiry, only if
+// it is still in state from. It reports whether it did.
+func (s *Store) casState(id, from, to, expires string) bool {
+	r, err := s.db.Exec(`UPDATE vms SET state = ?, expires_at = ?, updated_at = ? WHERE id = ? AND state = ?`, to, expires, now(), id, from)
+	if err != nil {
+		return false
+	}
+	n, _ := r.RowsAffected()
+	return n == 1
+}

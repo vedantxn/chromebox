@@ -83,7 +83,7 @@ func (o *Orchestrator) reassertRoutes(ctx context.Context) {
 		return
 	}
 	for _, v := range vms {
-		if v.State == StateRunning {
+		if v.State == StateRunning || isWarm(v.State) {
 			_ = o.setRoute(ctx, v.NetIndex, v.Node)
 		}
 	}
@@ -163,7 +163,7 @@ func (o *Orchestrator) vanished(st api.Status) {
 		if v.Node != st.Node {
 			continue
 		}
-		if v.State != StateRunning || reported[v.ID] {
+		if (v.State != StateRunning && v.State != StateWarm) || reported[v.ID] {
 			delete(o.gone, v.ID)
 			continue
 		}
@@ -176,6 +176,11 @@ func (o *Orchestrator) vanished(st api.Status) {
 			continue
 		}
 		delete(o.gone, v.ID)
+		if v.State == StateWarm { // nobody's yet: just make sure it is never handed out
+			log.Printf("warm browser %s no longer runs on %s: removing it", v.ID, v.Node)
+			go o.Delete(context.Background(), v.ID)
+			continue
+		}
 		_ = o.store.SetState(v.ID, StateLost)
 		o.metrics.errors.WithLabelValues("vm_vanished").Inc()
 		o.store.endSessionRecord(v.ID, "browser stopped")

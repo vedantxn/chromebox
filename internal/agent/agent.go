@@ -111,6 +111,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.Handle("GET /metrics", a.metrics.handler())
 	mux.HandleFunc("POST /v1/vms", a.createVM)
 	mux.HandleFunc("DELETE /v1/vms/{id}", a.deleteVM)
+	mux.HandleFunc("POST /v1/vms/{id}/warm", a.warmVM)
 	mux.HandleFunc("POST /v1/vms/{id}/migrate", a.migrateOut)
 	mux.HandleFunc("POST /v1/vms/{id}/commit", a.commit)
 	mux.HandleFunc("POST /v1/vms/{id}/abort", a.abort)
@@ -180,6 +181,33 @@ func (a *Agent) deleteVM(w http.ResponseWriter, r *http.Request) {
 	_ = os.RemoveAll(p.MemDir())
 	a.cleaner.later(remains.Clean)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// warmVM runs base.Warm on a running VM, reaching its browser on the guest's
+// own address.
+func (a *Agent) warmVM(w http.ResponseWriter, r *http.Request) {
+	var req struct{ URL string }
+	if err := decodeJSON(r, &req); err != nil || req.URL == "" {
+		http.Error(w, "need url", http.StatusBadRequest)
+		return
+	}
+	p := vm.PathsFor(r.PathValue("id"))
+	nn, err := vm.NetOf(p)
+	_, img, ierr := vm.ImageOf(p)
+	if err != nil || nn == nil || ierr != nil || img.CDPPort == 0 {
+		http.Error(w, "no browser VM "+r.PathValue("id"), http.StatusNotFound)
+		return
+	}
+	started := time.Now()
+	// Warming is background work: let every other VM on the node go first.
+	if err := vm.SetCPUWeight(p, 1); err == nil {
+		defer vm.SetCPUWeight(p, 100)
+	}
+	if err := base.Warm(r.Context(), fmt.Sprintf("%s:%d", nn.GuestIP, img.CDPPort), req.URL); err != nil {
+		http.Error(w, "warm: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]float64{"ms": float64(time.Since(started).Milliseconds())})
 }
 
 // sweepJails clears jails and cgroups that no VM directory refers to: what a

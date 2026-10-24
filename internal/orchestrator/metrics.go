@@ -33,6 +33,8 @@ type metrics struct {
 	forkCopies prometheus.Counter
 	errors     *prometheus.CounterVec // kind
 	autoscale  *prometheus.CounterVec // action
+	warmClaims *prometheus.CounterVec // hit, miss
+	warmReady  prometheus.Histogram
 }
 
 func newMetrics(o *Orchestrator) *metrics {
@@ -55,8 +57,10 @@ func newMetrics(o *Orchestrator) *metrics {
 		forkCopies: prometheus.NewCounter(prometheus.CounterOpts{Name: "baton_fork_copies_total", Help: "Copies started by forks."}),
 		errors:     prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_errors_total", Help: "Failures by kind."}, []string{"kind"}),
 		autoscale:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_autoscaler_actions_total", Help: "Autoscaler actions by kind."}, []string{"action"}),
+		warmClaims: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_warm_claims_total", Help: "Creates served from the warm pool (hit) or by a restore (miss)."}, []string{"result"}),
+		warmReady:  h("baton_warm_ready_seconds", "Warm pool: starting a browser and warming it up."),
 	}
-	m.reg.MustRegister(m.pause, m.resume, m.pauses, m.resumes, m.create, m.autoscale, m.migPause, m.migStream, m.forkPause, m.forkTotal, m.migrations, m.forks, m.forkCopies, m.errors,
+	m.reg.MustRegister(m.pause, m.resume, m.pauses, m.resumes, m.create, m.autoscale, m.migPause, m.migStream, m.forkPause, m.forkTotal, m.migrations, m.forks, m.forkCopies, m.errors, m.warmClaims, m.warmReady,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), &stateCollector{o})
 	return m
 }

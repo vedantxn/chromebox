@@ -269,8 +269,12 @@ func (a *autoscaler) tick(ctx context.Context) {
 	}
 	vms, _ := a.o.store.ListVMs()
 	count := map[string]int{}
+	warmMiB := map[string]int{} // warm browsers hold memory but are not load: they make room when needed
 	for _, v := range vms {
-		if v.State != StateLost && v.State != StatePaused {
+		switch {
+		case isWarm(v.State):
+			warmMiB[v.Node] += v.MemMiB
+		case v.State != StateLost && v.State != StatePaused:
 			count[v.Node]++
 		}
 	}
@@ -288,7 +292,8 @@ func (a *autoscaler) tick(ctx context.Context) {
 		} else {
 			delete(a.emptyAt, v.Name)
 		}
-		n := asNode{Name: v.Name, Up: v.Up, Cordoned: v.Cordoned, FreeMiB: v.CapMemMiB - v.UsedMemMiB, UsedMiB: v.UsedMemMiB,
+		used := v.UsedMemMiB - warmMiB[v.Name]
+		n := asNode{Name: v.Name, Up: v.Up, Cordoned: v.Cordoned, FreeMiB: v.CapMemMiB - used, UsedMiB: used,
 			VMs: count[v.Name], State: a.state[v.Name]}
 		if t, ok := a.emptyAt[v.Name]; ok {
 			n.EmptyFor = time.Since(t)

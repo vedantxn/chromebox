@@ -113,6 +113,17 @@ func CapCPU(p Paths) error {
 	return nil
 }
 
+// SetCPUWeight sets running VM p's share of CPU against other VMs (cgroup v2
+// cpu.weight: 1-10000, default 100).
+func SetCPUWeight(p Paths, w int) error {
+	cmd := exec.Command("sudo", "tee", filepath.Join(cgroupDir(p), "cpu.weight"))
+	cmd.Stdin = strings.NewReader(strconv.Itoa(w))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("cpu weight: %w: %s", err, out)
+	}
+	return nil
+}
+
 // StartProcess launches a jailed Firecracker for the VM at p and waits until
 // its API socket accepts connections. No VM exists yet at that point: the
 // process is an empty VMM waiting to be configured or to load a snapshot.

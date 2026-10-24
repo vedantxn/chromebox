@@ -41,6 +41,7 @@ type Config struct {
 	HeartbeatTimeout time.Duration // a node silent for longer is down
 
 	Autoscale AutoscaleConfig // start and stop nodes by load (off unless enabled)
+	Warm      WarmConfig      // browsers kept running and warmed up, handed out on create
 	Instances Instances       // the machines behind nodes; needed when Autoscale is enabled
 }
 
@@ -67,8 +68,12 @@ type Orchestrator struct {
 
 	started time.Time
 
-	metrics *metrics
-	auto    *autoscaler // nil unless autoscaling is enabled
+	metrics  *metrics
+	auto     *autoscaler   // nil unless autoscaling is enabled
+	warmKick chan struct{} // asks the warm loop to top the pool up
+
+	opMu   sync.Mutex
+	lastOp map[string]time.Time // node -> when an operation last touched it (see touch)
 }
 
 func New(cfg Config) (*Orchestrator, error) {
@@ -85,7 +90,8 @@ func New(cfg Config) (*Orchestrator, error) {
 	if err := st.accountSchema(); err != nil {
 		return nil, err
 	}
-	o := &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}, gone: map[string]time.Time{}, started: time.Now()}
+	o := &Orchestrator{cfg: cfg, store: st, seen: map[string]nodeState{}, pending: map[string]int{}, gone: map[string]time.Time{}, started: time.Now(),
+		warmKick: make(chan struct{}, 1), lastOp: map[string]time.Time{}}
 	o.metrics = newMetrics(o)
 	if cfg.Autoscale.Enabled && cfg.Instances != nil {
 		o.auto = newAutoscaler(o, cfg.Autoscale, cfg.Instances)
@@ -97,6 +103,9 @@ func New(cfg Config) (*Orchestrator, error) {
 func (o *Orchestrator) Run(ctx context.Context) error {
 	api := &http.Server{Addr: o.cfg.APIListen, Handler: o.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go o.reconcileLoop(ctx)
+	if o.cfg.Warm.PerNode > 0 {
+		go o.warmLoop(ctx)
+	}
 	if o.auto != nil {
 		go o.auto.run(ctx)
 		log.Printf("orchestrator: autoscaling on (always on: %s, at most %d nodes, cooldown %s, idle stop %s)",
@@ -255,13 +264,42 @@ func (o *Orchestrator) Create(ctx context.Context, baseName string, ttl time.Dur
 		}
 		return vm, resp, err
 	}
+	o.touch(vm.Node)
 	d := time.Since(start)
 	o.metrics.create.Observe(secs(d))
-	o.store.addEvent(vm.ID, "created", map[string]any{"node": vm.Node, "base": vm.Base, "create_ms": ms(d)})
+	ev := map[string]any{"node": vm.Node, "base": vm.Base, "create_ms": ms(d)}
+	if resp.Warm {
+		ev["warm"] = true // handed a browser that was already running and warmed up
+	}
+	o.store.addEvent(vm.ID, "created", ev)
 	return vm, resp, nil
 }
 
 func (o *Orchestrator) create(ctx context.Context, baseName string, ttl time.Duration, onReserve ...func(id string) error) (api.VM, api.CreateVMResponse, error) {
+	if o.cfg.Warm.PerNode > 0 && baseName == o.cfg.Warm.Base {
+		sw := timing.Start()
+		o.place.Lock()
+		vm, ok, err := o.claimWarm(baseName, ttl, onReserve)
+		o.place.Unlock()
+		if err != nil {
+			return api.VM{}, api.CreateVMResponse{}, err
+		}
+		if ok {
+			o.metrics.warmClaims.WithLabelValues("hit").Inc()
+			o.kickWarm()
+			sw.Lap("claimed a warm browser")
+			vm.CDPPath = fmt.Sprintf("/v/%d", vm.NetIndex)
+			return vm, api.CreateVMResponse{OrchLaps: sw.Record(), Warm: true}, nil
+		}
+		o.metrics.warmClaims.WithLabelValues("miss").Inc()
+		defer o.kickWarm()
+	}
+	return o.createCold(ctx, baseName, ttl, "", StateRunning, onReserve...)
+}
+
+// createCold places a VM (on node, if given), starts it from the base snapshot
+// and routes the gateway to it, leaving it in state final.
+func (o *Orchestrator) createCold(ctx context.Context, baseName string, ttl time.Duration, onNode, final string, onReserve ...func(id string) error) (api.VM, api.CreateVMResponse, error) {
 	sw := timing.Start()
 	mem, ok := o.baseMem(baseName)
 	if !ok {
@@ -279,7 +317,21 @@ func (o *Orchestrator) create(ctx context.Context, baseName string, ttl time.Dur
 		o.place.Unlock()
 		return api.VM{}, api.CreateVMResponse{}, err
 	}
+	if onNode != "" {
+		var only []NodeView
+		for _, v := range views {
+			if v.Name == onNode {
+				only = append(only, v)
+			}
+		}
+		views = only
+	}
 	node, err := Place(views, Request{MemMiB: mem, Base: baseName}, o.cfg.Strategy)
+	if err != nil && onNode == "" && o.evictWarm(ctx) { // a warm browser was in the way: make room
+		if views, err = o.views(); err == nil {
+			node, err = Place(views, Request{MemMiB: mem, Base: baseName}, o.cfg.Strategy)
+		}
+	}
 	if err != nil {
 		o.place.Unlock()
 		return api.VM{}, api.CreateVMResponse{}, err
@@ -323,10 +375,10 @@ func (o *Orchestrator) create(ctx context.Context, baseName string, ttl time.Dur
 	}
 	sw.Lap("node started the VM, route set")
 	resp.OrchLaps = sw.Record()
-	if err := o.store.SetState(vm.ID, StateRunning); err != nil {
+	if err := o.store.SetState(vm.ID, final); err != nil {
 		return fail(err)
 	}
-	vm.State, vm.CDPPath = StateRunning, fmt.Sprintf("/v/%d", vm.NetIndex)
+	vm.State, vm.CDPPath = final, fmt.Sprintf("/v/%d", vm.NetIndex)
 	return vm, resp, nil
 }
 
@@ -350,6 +402,9 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 	vm, err := o.store.GetVM(id)
 	if err != nil {
 		return fmt.Errorf("unknown vm %q", id)
+	}
+	if !isWarm(vm.State) {
+		o.touch(vm.Node)
 	}
 	_ = o.store.SetState(id, StateDeleting)
 	if vm.State == StatePaused { // its snapshot is in storage, not on a node
@@ -430,8 +485,12 @@ func (o *Orchestrator) listNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	vms, _ := o.store.ListVMs()
 	count := map[string]int{}
+	warm := map[string]int{}
 	for _, v := range vms {
-		if v.State != StateLost {
+		switch {
+		case isWarm(v.State):
+			warm[v.Node]++
+		case v.State != StateLost:
 			count[v.Node]++
 		}
 	}
@@ -442,7 +501,7 @@ func (o *Orchestrator) listNodes(w http.ResponseWriter, r *http.Request) {
 	for _, n := range rows {
 		s := o.seen[n.Name]
 		out = append(out, api.Node{Name: n.Name, Up: !s.Seen.IsZero() && time.Since(s.Seen) < o.cfg.HeartbeatTimeout,
-			Cordoned: n.Cordoned, VMs: count[n.Name], CapMemMiB: s.Status.CapMemMiB, UsedMiB: used[n.Name], AgentURL: n.AgentURL,
+			Cordoned: n.Cordoned, VMs: count[n.Name], Warm: warm[n.Name], CapMemMiB: s.Status.CapMemMiB, UsedMiB: used[n.Name], AgentURL: n.AgentURL,
 			State: o.auto.NodeState(n.Name)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -519,7 +578,7 @@ func (o *Orchestrator) closeConns(n int) int {
 func countLive(vms []api.VM) int {
 	n := 0
 	for _, v := range vms {
-		if v.State != StatePaused {
+		if v.State != StatePaused && !isWarm(v.State) { // warm browsers make room when needed
 			n++
 		}
 	}

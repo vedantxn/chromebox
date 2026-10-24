@@ -78,6 +78,12 @@ func (c *Client) DeleteVM(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/vms/"+id, nil, nil)
 }
 
+// Warm gets a VM's freshly restored browser ready for its first user (see
+// base.Warm), loading pageURL in a context that is thrown away.
+func (c *Client) Warm(ctx context.Context, id, pageURL string) error {
+	return c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/warm", map[string]string{"url": pageURL}, nil)
+}
+
 func (c *Client) Status(ctx context.Context) (api.Status, error) {
 	var out api.Status
 	err := c.do(ctx, http.MethodGet, "/v1/status", nil, &out)
