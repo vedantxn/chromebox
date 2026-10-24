@@ -1,0 +1,82 @@
+diff --git a/src/providers/baton.ts b/src/providers/baton.ts
+new file mode 100644
+index 0000000..aa68e04
+--- /dev/null
++++ b/src/providers/baton.ts
+@@ -0,0 +1,35 @@
++import type { ProviderClient, ProviderSession } from "../types.js";
++import { requireEnv } from "../utils/env.js";
++import { Baton, type Session } from "batonvm";
++
++export class BatonProvider implements ProviderClient {
++  readonly name = "BATON";
++  private _client: Baton | null = null;
++  private sessions = new Map<string, Session>();
++
++  // Baton has no price yet: sessions are free while it is a demo.
++  computeCost(_seconds: number): number {
++    return 0;
++  }
++
++  private client(): Baton {
++    if (!this._client) {
++      this._client = new Baton({ apiKey: requireEnv("BATON_API_KEY") });
++    }
++    return this._client;
++  }
++
++  async create(): Promise<ProviderSession> {
++    const session = await this.client().sessions.create();
++    if (!session?.id || !session.connectUrl)
++      throw new Error("Invalid Baton session response");
++    this.sessions.set(session.id, session);
++    return { id: session.id, cdpUrl: session.connectUrl };
++  }
++
++  async release(id: string): Promise<void> {
++    const session = this.sessions.get(id);
++    this.sessions.delete(id);
++    if (session) await session.close();
++  }
++}
+diff --git a/src/providers/index.ts b/src/providers/index.ts
+index 6f86bce..ce0b849 100644
+--- a/src/providers/index.ts
++++ b/src/providers/index.ts
+@@ -11,6 +11,7 @@ import { LightpandaProvider } from "./lightpanda.js";
+ import { BrowserlessProvider } from "./browserless.js";
+ import { CloudflareProvider } from "./cloudflare.js";
+ import { AwsAgentCoreProvider } from "./aws-agentcore.js";
++import { BatonProvider } from "./baton.js";
+ 
+ export function getRequiredEnvVarsForProvider(name: string): string[] {
+   const key = name.trim().toLowerCase();
+@@ -33,6 +34,7 @@ export function getRequiredEnvVarsForProvider(name: string): string[] {
+     return ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"];
+   // Credentials come from the standard AWS chain, which may not use env vars.
+   if (key === "aws-agentcore" || key === "agentcore") return ["AWS_REGION"];
++  if (key === "baton") return ["BATON_API_KEY"];
+   throw new Error(`Unknown provider: ${name}`);
+ }
+ 
+@@ -61,5 +63,6 @@ export function resolveProvider(name: string): ProviderClient {
+   if (key === "cloudflare" || key === "cf") return new CloudflareProvider();
+   if (key === "aws-agentcore" || key === "agentcore")
+     return new AwsAgentCoreProvider();
++  if (key === "baton") return new BatonProvider();
+   throw new Error(`Unknown provider: ${name}`);
+ }
+diff --git a/src/types.ts b/src/types.ts
+index 19e5ec8..d73835e 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -11,7 +11,8 @@ export type ProviderName =
+   | "LIGHTPANDA"
+   | "BROWSERLESS"
+   | "CLOUDFLARE"
+-  | "AWS_AGENTCORE";
++  | "AWS_AGENTCORE"
++  | "BATON";
+ 
+ export type ProviderSession = {
+   id: string;

@@ -53,28 +53,30 @@ run)
   on "cd bench && ORCH=http://$gw:8080 GW=$gw TOKEN=$(cat scripts/aws/token) API=https://batonvm.vercel.app KEY=${BATON_KEY:-} node run.mjs $* > results.json && cat results.json" > "bench/results/$(date -u +%F).json"
   echo "wrote bench/results/$(date -u +%F).json"
   ;;
-browserbench)
-  # Steel's remote-browser benchmark against Baton, as a free-account customer.
-  # Starts the run in the background on the client with a throwaway account;
-  # "browserbench-wait" waits for it, fetches the results and deletes the account.
-  runs=${2:-300}
+browserbench|arena)
+  # An outside benchmark against Baton, as a free-account customer: Steel's
+  # (browserbench) or Notte's Browser Arena (arena). Starts the run in the
+  # background on the client with a throwaway account; "<name>-wait" waits for
+  # it, fetches the results and deletes the account.
+  name=$1; dir=$name; [[ $name == arena ]] && dir=browserarena
+  runs=${2:-$([[ $name == arena ]] && echo 100 || echo 300)}
   gw=$(aws ec2 describe-instances --filters Name=tag:Name,Values=chromebox-gateway --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
   on 'command -v git >/dev/null || sudo dnf install -y -q git >/dev/null; mkdir -p bb'
-  scp -q -i "$CB_SSH_KEY" scripts/bench/browserbench/run.sh scripts/bench/browserbench/baton.patch "ec2-user@$(ip):bb/"
+  scp -q -i "$CB_SSH_KEY" scripts/bench/$dir/run.sh scripts/bench/$dir/baton.patch "ec2-user@$(ip):bb/"
   on "cd bb && rm -f baton.jsonl run.log && TOKEN=$(cat scripts/aws/token) GW=$gw RUNS=$runs bash -s" <<'EOS'
 set -euo pipefail
 api() { curl -fsS -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' "$@"; }
 uid=$(api -X POST "http://$GW:8080/v1/users" -d '{"github_id":990000001,"login":"browserbench"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 key=$(api -X POST "http://$GW:8080/v1/users/$uid/keys" -d '{"name":"browserbench"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["key"])')
 echo "$uid" > uid
-BATON_API_KEY=$key RUNS=$RUNS nohup bash run.sh > run.log 2>&1 &
+BATON_API_KEY=$key RUNS=$RUNS nohup bash run.sh > run.log 2>&1 < /dev/null &
 echo "started: user $uid, $RUNS runs"
 EOS
   ;;
-browserbench-wait)
-  gw=$(aws ec2 describe-instances --filters Name=tag:Name,Values=chromebox-gateway --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
-  until ! on 'pgrep -f "[s]rc/cli.ts --provider baton" >/dev/null'; do sleep 20; done
-  scp -q -i "$CB_SSH_KEY" "ec2-user@$(ip):bb/baton.jsonl" "bench/results/browserbench-baton-$(date -u +%F).jsonl"
+browserbench-wait|arena-wait)
+  name=${1%-wait}; out="bench/results/$name-baton-$(date -u +%F).jsonl"
+  until ! on 'pgrep -f "[s]rc/cli.ts --" >/dev/null'; do sleep 20; done
+  scp -q -i "$CB_SSH_KEY" "ec2-user@$(ip):bb/baton.jsonl" "$out"
   uid=$(on 'cat bb/uid')
   # Delete the throwaway account: its keys, sessions, events and the user row.
   scripts/aws/nodes.sh ssh gateway "sudo python3 - $uid" <<'EOS'
@@ -89,13 +91,13 @@ db.execute("DELETE FROM users WHERE id = ?", (uid,))
 db.commit()
 print("deleted", uid)
 EOS
-  wc -l "bench/results/browserbench-baton-$(date -u +%F).jsonl"
+  wc -l "$out"
   ;;
 down)
   aws ec2 stop-instances --instance-ids "$(instance)" >/dev/null && echo "stopping $(instance)"
   ;;
 *)
-  echo "usage: bench-client.sh up|run [tests...]|browserbench [runs]|browserbench-wait|down" >&2
+  echo "usage: bench-client.sh up|run [tests...]|browserbench|arena [runs]|browserbench-wait|arena-wait|down" >&2
   exit 2
   ;;
 esac
