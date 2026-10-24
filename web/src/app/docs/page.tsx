@@ -24,7 +24,16 @@ const twin = await chromium.connectOverCDP(copy.connectUrl);
 console.log(twin.contexts()[0].pages().map((p) => p.url()));
 await copy.close();
 
-await session.close();`;
+// Sleep: store the browser and free its machine, then bring it back anywhere.
+await session.pause();   // idle browsers cost nothing; kept up to 7 days
+await session.resume();  // same pages and cookies; session.connectUrl is fresh
+
+// Log in once, save it, and start later sessions already logged in.
+await session.saveProfile('shop');
+const later = await baton.sessions.create({ profile: 'shop' });
+
+await session.close();
+await later.close();`;
 
 const curl = `curl -X POST https://batonvm.vercel.app/api/v1/sessions \\
   -H "Authorization: Bearer $BATON_API_KEY"
@@ -51,11 +60,15 @@ export default function Docs() {
       <table className="mt-4 w-full text-left text-sm">
         <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
           {[
-            ['POST /api/v1/sessions', 'start a browser; returns connectUrl'],
+            ['POST /api/v1/sessions {profile?}', 'start a browser (from a saved profile: already logged in); returns connectUrl'],
             ['GET /api/v1/sessions[/:id]', 'your sessions'],
             ['DELETE /api/v1/sessions/:id', 'end it'],
             ['POST /api/v1/sessions/:id/migrate', 'move it to another machine, connection kept'],
             ['POST /api/v1/sessions/:id/fork {count}', 'copy the running browser into new sessions (same pages, cookies, storage)'],
+            ['POST /api/v1/sessions/:id/pause', 'store the running browser and free its machine; open connections close'],
+            ['POST /api/v1/sessions/:id/resume', 'bring a paused browser back, on any machine; returns a fresh connectUrl'],
+            ['GET /api/v1/sessions/:id/events', 'what happened to it: created, migrated (with the pause), forked, paused, ended and why'],
+            ['GET /api/v1/profiles · POST {session, name} · DELETE /:name', 'save a running browser\'s pages, cookies and storage; start sessions from it'],
             ['POST /api/v1/sessions/:id/live', 'a short-lived URL to watch it'],
             ['GET /api/v1/usage', 'sessions running, minutes used today'],
           ].map(([a, b]) => <tr key={a}><td className="py-2 pr-4 font-mono">{a}</td><td className="py-2 text-zinc-600 dark:text-zinc-400">{b}</td></tr>)}
@@ -63,7 +76,8 @@ export default function Docs() {
       </table>
       <h2 className="mt-12 text-lg font-semibold">Limits</h2>
       <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-        2 sessions at a time · 15 minutes per session · 60 browser-minutes per day · 10 new sessions per minute.
+        2 sessions running at a time · 15 minutes per session · 60 browser-minutes per day · 10 new sessions per minute ·
+        5 paused sessions (kept 7 days; paused time is not browser time) · 3 profiles.
         Over a limit: HTTP 429. Out of capacity: HTTP 503.
       </p>
     </main>

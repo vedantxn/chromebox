@@ -1,6 +1,6 @@
 {
   "name": "batonvm",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Cloud browsers for agents that keep running while they move between machines",
   "license": "MIT",
   "homepage": "https://batonvm.vercel.app",

@@ -1,10 +1,10 @@
 # Baton
 
-Cloud browsers for AI agents. Every session is a real Chrome in its own Firecracker microVM, restored from a snapshot in under 200 ms. A running browser can **move to another machine mid-session** without the agent's connection dropping, and can be **forked** into copies that start from the same logged-in state.
+Cloud browsers for AI agents. Every session is a real Chrome in its own Firecracker microVM, restored from a snapshot in about 190 ms. A running browser can **move to another machine mid-session** without the agent's connection dropping, be **forked** into copies that start from the same logged-in state, **paused** to storage (and cost nothing) and resumed on any machine, and **saved as a profile** so later sessions start already logged in. Machines are **started and stopped automatically** by load.
 
 - Live: **https://batonvm.vercel.app** (sign in with GitHub, get an API key)
 - SDK: `npm install batonvm` ([sdk/](sdk/))
-- Numbers, with raw samples: **https://batonvm.vercel.app/benchmarks**
+- Numbers, with raw samples: **https://batonvm.vercel.app/benchmarks** · live status: **https://batonvm.vercel.app/status**
 
 ```js
 import { Baton } from 'batonvm';
@@ -18,6 +18,10 @@ await page.goto('https://example.com');
 
 await session.migrate();             // the browser changes machines; `page` keeps working
 const { sessions } = await session.fork(3); // 3 copies: same pages, cookies, storage
+
+await session.pause();                      // stored in S3; no machine holds it
+await session.resume();                     // back on any machine, exactly as it was
+await session.saveProfile('shop');          // later: baton.sessions.create({ profile: 'shop' })
 ```
 
 ## What it does, measured
@@ -26,13 +30,16 @@ From a client in us-east-1, on 2 × m8i.large with nested virtualization (slower
 
 | | p50 | p95 |
 |---|---|---|
-| New browser: request → Chrome answering CDP (100 creates) | **176 ms** | 198 ms |
-| Live migration: browser paused while it moves (20 moves) | **212 ms** | 248 ms |
-| … a live CDP client's longest wait during the move | 573 ms | 753 ms |
+| New browser: request → Chrome answering CDP (100 creates) | **186 ms** | 209 ms |
+| Live migration: browser paused while it moves (20 moves) | **212 ms** | 241 ms |
+| … a live CDP client's longest wait during the move | 447 ms | 877 ms |
 | … disconnects | **0** | |
-| Fork: parent paused | **216 ms** | 218 ms |
-| Fork: 3 copies of a logged-in browser running | 3.1 s | 3.4 s |
-| Memory a browser really costs (of 1 GiB): fresh / fork copy | 53 / 84 MiB | |
+| Fork: parent paused | **210 ms** | 215 ms |
+| Fork: 3 copies of a logged-in browser running | 2.6 s | 2.7 s |
+| Pause a browser to S3 (request → stored and stopped) | 1.9 s | 2.1 s |
+| Resume it, on any machine (request → Chrome answering) | **1.0 s** | 1.1 s |
+| Start a session from a saved, logged-in profile | 0.8 s | 0.9 s |
+| Memory a browser really costs (of 1 GiB): fresh / fork copy | 55 / 84 MiB | |
 
 **The headline demos:**
 - **Drain under load.** An agent clicks from article to article on Wikipedia while the machine its browser runs on is drained. Every step succeeds. One step is 1.6 s slower. Its tab's state survives. [`scripts/test/m5-headline.sh`](scripts/test/m5-headline.sh)
@@ -52,6 +59,9 @@ From a client in us-east-1, on 2 × m8i.large with nested virtualization (slower
 - **Post-copy live migration.** The pause sends only device state and a few KB of disk changes. The target resumes at once. Its memory is served by a `userfaultfd` handler that fetches 64 KiB blocks on fault and installs a background stream from the source's page server. Zero pages never travel.
 - **Fork.** A running browser's snapshot becomes a base made on the fly. Copies map it copy-on-write, and spill to other nodes by pulling it once per node. Open tabs are reopened in fresh renderer processes, otherwise `Math.random` returns the same numbers in every copy.
 - **The orchestrator** places VMs (spread or pack), owns the routes, runs two-phase migrations and drains, fences nodes that come back, and marks VMs lost when a node or a VM goes silent. Agents' clients are told at once instead of hanging.
+- **Pause, resume and profiles.** A snapshot is stored in S3 as the VM's device state, its disk as the blocks that differ from the base every machine holds, and its memory as the non-zero pages in 32 MiB objects written and read in parallel. Resume rebuilds the disk, loads the memory into a sparse file, sets the guest clock and starts Chrome on whichever machine has room. A profile is the same snapshot taken from a running browser (it pauses ~205 ms); sessions from it are fork copies of an image each machine fetches once.
+- **Autoscaling.** The orchestrator starts a stopped machine when the others are nearly full and, when load drops, drains one with live migration and stops it. Decisions are a pure function with unit tests. Machines configure their own network at boot, so nothing needs ssh.
+- **Observability.** Every session has an event log (created, migrated with its pause, forked, paused, ended and why); Prometheus metrics on the orchestrator and every agent; a public status page.
 - **Isolation:**
   - Every Firecracker runs under its **jailer**: chrooted to a jail holding only its own files, in its own PID namespace and cgroup v2 (memory capped, 1 CPU once running, pids capped), as an unprivileged user.
   - nftables keeps VMs off the cloud metadata service, the VPC, each other, mail ports and their hosts.
@@ -103,7 +113,8 @@ The scripts are written for this one deployment rather than as a general install
 
 ## Known limits
 
-- **One gateway** runs the orchestrator (SQLite), the CDP proxy and NAT, so it is a single point of failure. Sessions survive an orchestrator restart, not a gateway loss.
+- **One gateway** runs the orchestrator (SQLite), the CDP proxy and NAT, so it is a single point of failure. Sessions survive an orchestrator restart, not a gateway loss. Its own network setup (tunnels, NAT, rules) is not yet restored at boot the way the nodes' is.
+- **Resume downloads all of a paused session's memory before it starts** (~0.8 s of its 1.0 s). Fetching pages from storage on demand, as post-copy migration does between machines, would cut that.
 - **Nested virtualization** on EC2 rather than bare metal, and a 2-vCPU node fits about four browsers.
 - **The page-fault handler** runs outside the jail.
 - **A "view" token grants full CDP access.**

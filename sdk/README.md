@@ -55,4 +55,4 @@ Errors are `BatonError` with `status`: `401` bad key, `429` over a limit, `503` 
 
 ## Limits (free)
 
-2 sessions at a time · 15 minutes per session · 60 browser-minutes per day · 10 new sessions per minute.
+2 sessions running at a time · 15 minutes per session · 60 browser-minutes per day · 10 new sessions per minute · 5 paused sessions (kept 7 days; paused time is not browser time) · 3 profiles.
