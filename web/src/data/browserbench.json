@@ -1,0 +1,105 @@
+{
+  "what": "Steel's open-source remote-browser benchmark (steel-dev/browserbench, MIT, pinned at 847e4ed) with Baton added as a provider. One session at a time: create, connectOverCDP, page.goto(google.com, domcontentloaded), release. 10 warm-up runs, then 300 measured.",
+  "measured": {
+    "provider": "Baton",
+    "date": "2026-10-24",
+    "client": "t3.small in us-east-1",
+    "account": "free tier, paced at 9 sessions a minute",
+    "runs": 300,
+    "success": 300,
+    "stages": {
+      "create": {
+        "avg": 244.95,
+        "p50": 240,
+        "p95": 285.45,
+        "p99": 324.22,
+        "min": 207,
+        "max": 497
+      },
+      "connect": {
+        "avg": 271.42,
+        "p50": 262,
+        "p95": 343.05,
+        "p99": 365.02,
+        "min": 217,
+        "max": 369
+      },
+      "goto": {
+        "avg": 1358.4,
+        "p50": 1354,
+        "p95": 1426,
+        "p99": 1469.02,
+        "min": 1246,
+        "max": 1490
+      },
+      "release": {
+        "avg": 218.52,
+        "p50": 216,
+        "p95": 264,
+        "p99": 338.65,
+        "min": 139,
+        "max": 456
+      },
+      "total": {
+        "avg": 2093.29,
+        "p50": 2084,
+        "p95": 2191,
+        "p99": 2292.22,
+        "min": 1912,
+        "max": 2345
+      }
+    }
+  },
+  "published": {
+    "source": "https://steel.dev/blog/remote-browser-benchmark",
+    "fetched": "2026-10-24",
+    "note": "Published by Steel from its own run: 5,000 sessions per provider, AWS EC2 us-east-1, google.com, default settings. We did not re-run these.",
+    "rows": [
+      {
+        "provider": "Steel",
+        "total_median": 867.0,
+        "total_p95": 1090.0,
+        "create": 181.57,
+        "connect": 174.64,
+        "goto": 490.29,
+        "release": 47.62
+      },
+      {
+        "provider": "Kernel",
+        "total_median": 1485.0,
+        "total_p95": 1752.1,
+        "create": 261.1,
+        "connect": 428.9,
+        "goto": 533.95,
+        "release": 294.57
+      },
+      {
+        "provider": "Browserbase",
+        "total_median": 1669.0,
+        "total_p95": 1873.0,
+        "create": 188.18,
+        "connect": 517.37,
+        "goto": 792.27,
+        "release": 178.99
+      },
+      {
+        "provider": "Hyperbrowser",
+        "total_median": 3665.5,
+        "total_p95": 5338.0,
+        "create": 1731.63,
+        "connect": 347.6,
+        "goto": 377.89,
+        "release": 1199.98
+      },
+      {
+        "provider": "AnchorBrowser",
+        "total_median": 7919.0,
+        "total_p95": 11561.0,
+        "create": 3796.55,
+        "connect": 184.29,
+        "goto": 1259.66,
+        "release": 2760.79
+      }
+    ]
+  }
+}

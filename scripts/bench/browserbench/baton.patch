@@ -1,0 +1,81 @@
+diff --git a/package.json b/package.json
+index dc0c0e4..a2dc426 100644
+--- a/package.json
++++ b/package.json
+@@ -25,6 +25,7 @@
+     "steel-sdk": "^0.14.0",
+     "@hyperbrowser/sdk": "^0.71.0",
+     "@onkernel/sdk": "^0.18.0",
++    "batonvm": "^0.3.0",
+     "dotenv": "^17.2.3",
+     "playwright-core": "^1.56.1"
+   }
+diff --git a/src/providers/baton.ts b/src/providers/baton.ts
+new file mode 100644
+index 0000000..c46ecc7
+--- /dev/null
++++ b/src/providers/baton.ts
+@@ -0,0 +1,30 @@
++import type { ProviderClient, ProviderSession } from "../types.js";
++import { requireEnv } from "../utils/env.js";
++import { Baton, type Session } from "batonvm";
++
++export class BatonProvider implements ProviderClient {
++  readonly name = "BATON";
++  private _client: Baton | null = null;
++  private sessions = new Map<string, Session>();
++
++  private client(): Baton {
++    if (!this._client) {
++      this._client = new Baton({ apiKey: requireEnv("BATON_API_KEY") });
++    }
++    return this._client;
++  }
++
++  async create(): Promise<ProviderSession> {
++    const session = await this.client().sessions.create();
++    if (!session?.id || !session.connectUrl)
++      throw new Error("Invalid Baton session response");
++    this.sessions.set(session.id, session);
++    return { id: session.id, cdpUrl: session.connectUrl };
++  }
++
++  async release(id: string): Promise<void> {
++    const session = this.sessions.get(id);
++    this.sessions.delete(id);
++    if (session) await session.close();
++  }
++}
+diff --git a/src/providers/index.ts b/src/providers/index.ts
+index e0bdfcc..db8855e 100644
+--- a/src/providers/index.ts
++++ b/src/providers/index.ts
+@@ -4,6 +4,7 @@ import { SteelProvider } from "./steel.js";
+ import { AnchorBrowserProvider } from "./anchorbrowser.js";
+ import { HyperbrowserProvider } from "./hyperbrowser.js";
+ import { KernelProvider } from "./kernel.js";
++import { BatonProvider } from "./baton.js";
+ 
+ export function resolveProvider(name: string): ProviderClient {
+   const key = name.trim().toLowerCase();
+@@ -15,5 +16,6 @@ export function resolveProvider(name: string): ProviderClient {
+   if (key === "hyperbrowser" || key === "hyper")
+     return new HyperbrowserProvider();
+   if (key === "kernel") return new KernelProvider();
++  if (key === "baton") return new BatonProvider();
+   throw new Error(`Unknown provider: ${name}`);
+ }
+diff --git a/src/types.ts b/src/types.ts
+index 87ace06..182ce94 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -3,7 +3,8 @@ export type ProviderName =
+   | "BROWSERBASE"
+   | "ANCHORBROWSER"
+   | "HYPERBROWSER"
+-  | "KERNEL";
++  | "KERNEL"
++  | "BATON";
+ 
+ export type MetricRecord = {
+   created_at: string;

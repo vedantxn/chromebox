@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import data from '@/data/benchmarks.json';
+import bb from '@/data/browserbench.json';
 
 // The numbers come from one JSON file written by scripts/bench/run.mjs on a
 // client in us-east-1; nothing here is typed in by hand.
@@ -78,6 +79,47 @@ export default function Benchmarks() {
       <Table title="Fresh start" what={String(t.fresh.what)} rows={[['create', fresh]]} />
       {pub && <Table title="Public path, as a customer" what={String((t.public as { what: string }).what)}
         rows={[['create (API)', pub.create], ['connect (CDP)', pub.connect], ['first page', pub.first_page], ['total', pub.total]]} />}
+
+      <section className="mt-10">
+        <h2 className="text-lg font-semibold">Steel&apos;s remote-browser benchmark</h2>
+        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+          The open-source <a className="underline" href="https://github.com/steel-dev/browserbench">browserbench</a> (MIT) with Baton added as a provider and nothing else changed:
+          create a session, connect over CDP, load google.com, release; one at a time, 10 warm-ups then {bb.measured.runs} measured runs
+          ({bb.measured.success} succeeded). We ran Baton ourselves on {bb.measured.date} from a {bb.measured.client}, on a {bb.measured.account}.
+          The other rows are the numbers <a className="underline" href={bb.published.source}>Steel published</a> from its own run; we did not re-run them.
+        </p>
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-sm">
+            <thead className="text-zinc-500">
+              <tr><th className="pb-2 pr-4 font-normal"></th><th className="pb-2 pr-4 font-normal">total p50</th><th className="pb-2 pr-4 font-normal">p95</th>
+                <th className="pb-2 pr-4 font-normal">create</th><th className="pb-2 pr-4 font-normal">connect</th><th className="pb-2 pr-4 font-normal">load page</th><th className="pb-2 pr-4 font-normal">release</th><th className="pb-2 font-normal">all but page</th></tr>
+            </thead>
+            <tbody>{[
+              { provider: 'Baton (measured by us)', total_median: bb.measured.stages.total.p50, total_p95: bb.measured.stages.total.p95, create: bb.measured.stages.create.avg, connect: bb.measured.stages.connect.avg, goto: bb.measured.stages.goto.avg, release: bb.measured.stages.release.avg, mine: true },
+              ...bb.published.rows.map((r) => ({ ...r, provider: `${r.provider} (published)`, mine: false })),
+            ].sort((a, b) => a.total_median - b.total_median).map((r) => (
+              <tr key={r.provider} className={`border-t border-zinc-200 dark:border-zinc-800 ${r.mine ? 'font-semibold' : ''}`}>
+                <td className="py-2 pr-4">{r.provider}</td>
+                <td className="py-2 pr-4 tabular-nums">{ms(r.total_median)}</td><td className="py-2 pr-4 tabular-nums">{ms(r.total_p95)}</td>
+                <td className="py-2 pr-4 tabular-nums">{ms(r.create)}</td><td className="py-2 pr-4 tabular-nums">{ms(r.connect)}</td>
+                <td className="py-2 pr-4 tabular-nums">{ms(r.goto)}</td><td className="py-2 pr-4 tabular-nums">{ms(r.release)}</td>
+                <td className="py-2 tabular-nums">{ms(r.create + r.connect + r.release)}</td>
+              </tr>))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+          Total is the median of create + connect + load + release (p95 beside it); the stage columns are averages, as in Steel&apos;s table. Raw runs:{' '}
+          <a className="underline" href="/browserbench-baton.jsonl">browserbench-baton.jsonl</a>. Runner and patch: <code className="text-sm">scripts/bench/browserbench/</code>.
+        </p>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-zinc-600 dark:text-zinc-400">
+          <li>Without the page load, a Baton session costs {ms(bb.measured.stages.create.avg + bb.measured.stages.connect.avg + bb.measured.stages.release.avg)}: second-fastest of the six.</li>
+          <li>Loading google.com is where Baton loses: {ms(bb.measured.stages.goto.avg)} against 378–1,260 ms. The network is not the cause (first byte after about 75 ms). A browser restored from a snapshot runs cold: its first load of a heavy page takes about 1.3 s, and the same page takes about 350 ms by the third load in the same browser. We think nested virtualization makes every first touch of a memory page slow (measured: 12–17 µs per page); we have not run on bare metal.</li>
+          <li>Tried and not adopted: warming Chrome before the snapshot (the gain does not survive a restore), pre-mapping guest memory read-only (slower) or writable (about 300 ms faster to load, about 570 ms slower to start). Notes: <code className="text-sm">docs/learn/first-load.md</code>.</li>
+          <li>Different days, instances and run lengths (Steel: 5,000 runs; ours: {bb.measured.runs}); read it as the same method, not the same hour.</li>
+        </ul>
+      </section>
+
       <Table title="Live migration under a running client" what={`${String(t.migration.what)}. Disconnects: ${String(t.migration.disconnects)}.`}
         rows={[['browser paused', mig.paused], ['unreachable (pause → network moved)', mig.unreachable], ["client's longest wait", mig.client_longest_wait],
           ['client round trip, normally', mig.client_normal_round_trip], ['memory still arriving after the move', mig.memory_streamed_after]]} />
@@ -128,7 +170,7 @@ export default function Benchmarks() {
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">How, and what to keep in mind</h2>
         <ul className="mt-2 list-disc space-y-1 pl-5">
           <li>Machines: {String(d.environment.nodes)}. VMM: {String(d.environment.vmm)}. Guest: {String(d.environment.guest)}.</li>
-          <li>Nested virtualization (KVM inside an EC2 VM) is slower than the bare-metal hosts sandbox providers usually run on; every number here would be lower there.</li>
+          <li>Nested virtualization (KVM inside an EC2 VM) is slower than the bare-metal hosts sandbox providers usually run on; the numbers here are likely lower there (not measured).</li>
           <li>The client: {String(d.environment.client)}. Internal tests talk to the orchestrator and gateway on private addresses; the public test goes through the internet, Vercel and CloudFront, as a customer would.</li>
           <li>Fresh start is the orchestrator&apos;s own time from request to Chrome answering, including placement, the node starting the VM in its jail, and the network route.</li>
           <li>Every browser is a new VM restored from a snapshot. Each node keeps two jailed Firecracker processes started ahead of time (no guest yet, nothing about the browser to come); a create claims one and restores into it.</li>

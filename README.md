@@ -41,6 +41,8 @@ From a client in us-east-1, on 2 × m8i.large with nested virtualization (slower
 | Start a session from a saved, logged-in profile | 0.8 s | 0.9 s |
 | Memory a browser really costs (of 1 GiB): fresh / fork copy | 55 / 84 MiB | |
 
+On Steel's open-source [remote-browser benchmark](https://github.com/steel-dev/browserbench) (create, connect, load google.com, release; 300 runs from us-east-1) a Baton session takes **2,084 ms** at p50. Everything except the page load costs 735 ms, second-fastest of the six providers in [Steel's published table](https://steel.dev/blog/remote-browser-benchmark); the page load (1,358 ms) is where we lose, and [docs/learn/first-load.md](docs/learn/first-load.md) says why and what did not fix it. The other providers' numbers are Steel's, not re-run by us.
+
 **The headline demos:**
 - **Drain under load.** An agent clicks from article to article on Wikipedia while the machine its browser runs on is drained. Every step succeeds. One step is 1.6 s slower. Its tab's state survives. [`scripts/test/m5-headline.sh`](scripts/test/m5-headline.sh)
 - **Fork a logged-in session.** One browser logs in, is forked into 6 across two machines, and six agents continue in parallel as the same user. [`scripts/test/m6-headline.sh`](scripts/test/m6-headline.sh)
