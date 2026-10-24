@@ -18,6 +18,8 @@ const (
 	StateMigrating = "migrating"
 	StateLost      = "lost"
 	StateDeleting  = "deleting"
+	StatePausing   = "pausing" // its snapshot is being taken and stored
+	StatePaused    = "paused"  // stored in object storage; no node holds it
 )
 
 // maxUserIndex is the highest network index handed out; the one above it is
@@ -56,6 +58,10 @@ func Open(path string) (*Store, error) {
 	}
 	// Added in M4; ALTER fails harmlessly if the column already exists.
 	_, _ = db.Exec(`ALTER TABLE vms ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`)
+	// Added with pause/resume: where a paused VM's snapshot is, and how much of
+	// its lifetime was left when it was paused (the clock stops while paused).
+	_, _ = db.Exec(`ALTER TABLE vms ADD COLUMN snap_prefix TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE vms ADD COLUMN remaining_s REAL NOT NULL DEFAULT 0`)
 	return &Store{db: db}, nil
 }
 
@@ -149,6 +155,37 @@ func (s *Store) SetNode(id, node string) error {
 	return err
 }
 
+// SetPaused records that VM id now lives in object storage under prefix. Its
+// node is empty, its base is the regular base its disk delta applies to, and
+// remaining is how much lifetime it had left; it keeps its network index, so
+// its address survives the pause.
+func (s *Store) SetPaused(id, prefix, base string, remaining time.Duration) error {
+	_, err := s.db.Exec(`UPDATE vms SET state = ?, node = '', base = ?, snap_prefix = ?, remaining_s = ?, updated_at = ? WHERE id = ?`,
+		StatePaused, base, prefix, remaining.Seconds(), now(), id)
+	return err
+}
+
+// SnapInfo is where paused VM id's snapshot is and how much lifetime it has left.
+func (s *Store) SnapInfo(id string) (prefix string, remaining time.Duration, err error) {
+	var r float64
+	err = s.db.QueryRow(`SELECT snap_prefix, remaining_s FROM vms WHERE id = ?`, id).Scan(&prefix, &r)
+	return prefix, time.Duration(r * float64(time.Second)), err
+}
+
+// SetResuming puts paused VM id on node, in state creating, so that its
+// memory counts there while it is brought back.
+func (s *Store) SetResuming(id, node string) error {
+	_, err := s.db.Exec(`UPDATE vms SET state = ?, node = ?, updated_at = ? WHERE id = ?`, StateCreating, node, now(), id)
+	return err
+}
+
+// SetResumed marks VM id running with a new expiry, and forgets its snapshot.
+func (s *Store) SetResumed(id string, expires time.Time) error {
+	_, err := s.db.Exec(`UPDATE vms SET state = ?, expires_at = ?, snap_prefix = '', remaining_s = 0, updated_at = ? WHERE id = ?`,
+		StateRunning, expires.UTC().Format(time.RFC3339Nano), now(), id)
+	return err
+}
+
 func (s *Store) DeleteVM(id string) error {
 	_, err := s.db.Exec(`DELETE FROM vms WHERE id = ?`, id)
 	return err
@@ -158,7 +195,8 @@ func (s *Store) DeleteVM(id string) error {
 // database, not from what agents last reported, means a VM still being created
 // already takes its space, so two creates cannot both claim the last slot.
 func (s *Store) UsedMem() (map[string]int, error) {
-	rows, err := s.db.Query(`SELECT node, SUM(mem_mib) FROM vms WHERE state != ? GROUP BY node`, StateLost)
+	// A paused VM takes no node's memory: it is in object storage.
+	rows, err := s.db.Query(`SELECT node, SUM(mem_mib) FROM vms WHERE state NOT IN (?, ?) GROUP BY node`, StateLost, StatePaused)
 	if err != nil {
 		return nil, err
 	}

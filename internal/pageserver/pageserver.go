@@ -25,6 +25,10 @@ import (
 	"time"
 )
 
+// Chunk is the unit memory is scanned in; ranges passed to WriteRunsRange
+// should start at a multiple of it.
+const Chunk = chunk
+
 const (
 	kindFault  = 'F'
 	kindStream = 'S'
@@ -183,9 +187,17 @@ func WriteRuns(w io.Writer, mem []byte, sent func(int)) error {
 // sparse while it is served (M6: an image mapped to serve a pull grew from
 // 615 MiB back to 1.1 GiB).
 func WriteRunsFrom(w io.Writer, r io.ReaderAt, size int64, sent func(int)) error {
+	return WriteRunsRange(w, r, 0, size, sent)
+}
+
+// WriteRunsRange writes the runs of bytes [start, start+size) of r, with
+// absolute offsets, then the end marker. A memory file cut into aligned
+// ranges (start a multiple of the 2 MiB chunk) gives independent streams that
+// can be sent and read in parallel.
+func WriteRunsRange(w io.Writer, r io.ReaderAt, start, size int64, sent func(int)) error {
 	buf := make([]byte, chunk)
-	for base := int64(0); base < size; base += chunk {
-		n := min(chunk, size-base)
+	for base := start; base < start+size; base += chunk {
+		n := min(chunk, start+size-base)
 		if _, err := r.ReadAt(buf[:n], base); err != nil && err != io.EOF {
 			return err
 		}

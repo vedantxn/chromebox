@@ -53,6 +53,12 @@ type Manifest struct {
 	DiskBase string `json:"disk_base,omitempty"`
 }
 
+// RootBase is the regular base a VM made from base name descends from: the
+// base itself, or for a fork image the base its disk was cloned from. Every
+// node holds the root bases, so a snapshot's disk can be stored as the blocks
+// that differ from one.
+func RootBase(name string) string { return diskBase(name) }
+
 // diskBase is the regular base a VM made from base name descends from.
 func diskBase(name string) string {
 	if m, err := Read(name); err == nil && m.DiskBase != "" {

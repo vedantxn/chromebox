@@ -40,6 +40,70 @@ type ForkImageRequest struct {
 	Image string `json:"image"`
 }
 
+// PauseRequest asks an agent to snapshot a running VM into object storage
+// under Prefix and stop it.
+type PauseRequest struct {
+	Prefix string `json:"prefix"`
+}
+
+// PauseResponse: what pausing took and stored.
+type PauseResponse struct {
+	Laps      timing.Record `json:"laps"`
+	PausedMs  float64       `json:"paused_ms"` // the guest, while its snapshot was taken
+	UploadMs  float64       `json:"upload_ms"` // the snapshot to storage
+	TotalMs   float64       `json:"total_ms"`
+	StoredMiB float64       `json:"stored_mib"` // everything stored
+	MemoryMiB float64       `json:"memory_mib"` // non-zero memory stored
+	DiskMiB   float64       `json:"disk_mib"`
+	DiskBase  string        `json:"disk_base"` // the regular base the VM's disk descends from
+}
+
+// SaveProfileRequest asks an agent to store a running VM's state under Prefix,
+// as a profile that new sessions can start from. The VM keeps running.
+type SaveProfileRequest struct {
+	Prefix string `json:"prefix"`
+}
+
+// SaveProfileResponse: what saving took and stored.
+type SaveProfileResponse struct {
+	PausedMs  float64 `json:"paused_ms"` // the running VM, while its state was captured
+	UploadMs  float64 `json:"upload_ms"`
+	StoredMiB float64 `json:"stored_mib"`
+	MemMiB    int     `json:"mem_mib"`
+	DiskBase  string  `json:"disk_base"`
+}
+
+// ProfileImageRequest asks an agent to have the profile snapshot at Prefix
+// ready as a local base called Name (fork-p-...), fetching it if it is not here.
+type ProfileImageRequest struct {
+	Name   string `json:"name"`
+	Prefix string `json:"prefix"`
+}
+
+// ProfileImageResponse: whether it had to be fetched, and what that took.
+type ProfileImageResponse struct {
+	Fetched    bool    `json:"fetched"`
+	DownloadMs float64 `json:"download_ms"`
+	StoredMiB  float64 `json:"stored_mib"`
+	MemMiB     int     `json:"mem_mib"`
+	DiskBase   string  `json:"disk_base"`
+}
+
+// ResumeRequest asks an agent to start a VM from the snapshot at Prefix, with
+// network index NetIndex (its address does not change across a pause).
+type ResumeRequest struct {
+	Prefix   string `json:"prefix"`
+	NetIndex int    `json:"net_index"`
+}
+
+// ResumeResponse: what resuming took.
+type ResumeResponse struct {
+	Laps       timing.Record `json:"laps"`
+	DownloadMs float64       `json:"download_ms"`
+	TotalMs    float64       `json:"total_ms"`
+	StoredMiB  float64       `json:"stored_mib"`
+}
+
 // ForkImageResponse: how long the parent was paused, and the image's size.
 type ForkImageResponse struct {
 	Laps     timing.Record `json:"laps"`

@@ -24,6 +24,10 @@ type metrics struct {
 	migStream  prometheus.Histogram
 	forkPause  prometheus.Histogram
 	forkTotal  prometheus.Histogram
+	pause      prometheus.Histogram
+	resume     prometheus.Histogram
+	pauses     *prometheus.CounterVec // result
+	resumes    *prometheus.CounterVec // result
 	migrations *prometheus.CounterVec // result
 	forks      *prometheus.CounterVec // result
 	forkCopies prometheus.Counter
@@ -41,12 +45,16 @@ func newMetrics(o *Orchestrator) *metrics {
 		migStream:  h("baton_migration_stream_seconds", "How long a migration's memory kept arriving after the VM resumed."),
 		forkPause:  h("baton_fork_parent_pause_seconds", "How long the parent was paused to take a fork image."),
 		forkTotal:  h("baton_fork_seconds", "Fork: request to every copy answering."),
+		pause:      h("baton_pause_seconds", "Pause: request to the session stored and its browser stopped."),
+		resume:     h("baton_resume_seconds", "Resume: request to the browser answering again."),
+		pauses:     prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_pauses_total", Help: "Pauses by result."}, []string{"result"}),
+		resumes:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_resumes_total", Help: "Resumes by result."}, []string{"result"}),
 		migrations: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_migrations_total", Help: "Migrations by result."}, []string{"result"}),
 		forks:      prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_forks_total", Help: "Forks by result."}, []string{"result"}),
 		forkCopies: prometheus.NewCounter(prometheus.CounterOpts{Name: "baton_fork_copies_total", Help: "Copies started by forks."}),
 		errors:     prometheus.NewCounterVec(prometheus.CounterOpts{Name: "baton_errors_total", Help: "Failures by kind."}, []string{"kind"}),
 	}
-	m.reg.MustRegister(m.create, m.migPause, m.migStream, m.forkPause, m.forkTotal, m.migrations, m.forks, m.forkCopies, m.errors,
+	m.reg.MustRegister(m.pause, m.resume, m.pauses, m.resumes, m.create, m.migPause, m.migStream, m.forkPause, m.forkTotal, m.migrations, m.forks, m.forkCopies, m.errors,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), &stateCollector{o})
 	return m
 }

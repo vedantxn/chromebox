@@ -68,10 +68,12 @@ sleep 1; echo "proxy: $(systemctl is-active chromebox-proxy), orchestrator: $(sy
 EOS
   else
     echo "== $n: agent"
-    scripts/aws/nodes.sh ssh "$n" "TOKEN=$token ORCH=http://$gw_ip:8080 bash -s" <<'EOS'
+    # The nodes' agents keep paused sessions and profiles in this bucket
+    # (scripts/aws/storage.sh makes it and the role that lets them use it).
+    scripts/aws/nodes.sh ssh "$n" "TOKEN=$token ORCH=http://$gw_ip:8080 BUCKET=$(cat scripts/aws/bucket.txt 2>/dev/null || true) bash -s" <<'EOS'
 set -euo pipefail
 sudo mkdir -p /etc/chromebox
-printf 'CHROMEBOX_TOKEN=%s\nCHROMEBOX_ORCHESTRATOR=%s\n' "$TOKEN" "$ORCH" | sudo tee /etc/chromebox/env >/dev/null
+printf 'CHROMEBOX_TOKEN=%s\nCHROMEBOX_ORCHESTRATOR=%s\nCHROMEBOX_SNAP_BUCKET=%s\n' "$TOKEN" "$ORCH" "$BUCKET" | sudo tee /etc/chromebox/env >/dev/null
 sudo chmod 600 /etc/chromebox/env
 sudo tee /etc/systemd/system/chromebox-agent.service >/dev/null <<'U'
 [Unit]

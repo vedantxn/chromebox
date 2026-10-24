@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 
 type Key = { id: string; name: string; prefix: string; created_at: string; revoked: boolean };
 type Sess = { id: string; status: string; node?: string; createdAt: string; endedAt?: string; endReason?: string; migrations: number };
-type Usage = { running: number; max_running: number; minutes_today: number; max_minutes_per_day: number };
+type Usage = { running: number; max_running: number; paused?: number; minutes_today: number; max_minutes_per_day: number };
+type Profile = { name: string; createdAt: string; storedMiB: number };
 
 const j = (r: Response) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(new Error(e.error ?? r.statusText))));
 
@@ -12,13 +13,14 @@ export default function Dashboard() {
   const [keys, setKeys] = useState<Key[]>([]);
   const [sessions, setSessions] = useState<Sess[]>([]);
   const [usage, setUsage] = useState<Usage | null>(null);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [k, s, u] = await Promise.all([fetch('/api/v1/keys').then(j), fetch('/api/v1/sessions').then(j), fetch('/api/v1/usage').then(j)]);
-      setKeys(k); setSessions(s); setUsage(u);
+      const [k, s, u, p] = await Promise.all([fetch('/api/v1/keys').then(j), fetch('/api/v1/sessions').then(j), fetch('/api/v1/usage').then(j), fetch('/api/v1/profiles').then(j)]);
+      setKeys(k); setSessions(s); setUsage(u); setProfiles(p);
     } catch (e) { setErr(String(e)); }
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 3000); return () => clearInterval(t); }, [load]);
@@ -26,6 +28,13 @@ export default function Dashboard() {
   const createKey = async () => {
     const k = await fetch('/api/v1/keys', { method: 'POST', body: JSON.stringify({ name: 'key ' + (keys.length + 1) }) }).then(j);
     setNewKey(k.key); load();
+  };
+  const startFromProfile = async (name: string) => {
+    setErr(null);
+    try {
+      const s = await fetch('/api/v1/sessions', { method: 'POST', body: JSON.stringify({ profile: name }) }).then(j);
+      location.href = `/dashboard/sessions/${s.id}`;
+    } catch (e) { setErr(String(e)); }
   };
   const startSession = async () => {
     setErr(null);
@@ -59,9 +68,26 @@ export default function Dashboard() {
       </section>
 
       <section>
+        <h2 className="font-medium">Profiles</h2>
+        <p className="mt-1 text-sm text-zinc-500">Log in once, save the browser as a profile, and start new sessions already logged in.</p>
+        <ul className="mt-3 divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+          {profiles.length === 0 && <li className="py-2 text-zinc-500">None yet. Open a session, log in, and save it as a profile.</li>}
+          {profiles.map((p) => (
+            <li key={p.name} className="flex items-center justify-between py-2">
+              <span><code className="font-mono">{p.name}</code> <span className="text-zinc-500">saved {new Date(p.createdAt).toLocaleString()}</span></span>
+              <span className="flex gap-3">
+                <button className="underline" onClick={() => startFromProfile(p.name)}>Start</button>
+                <button className="text-red-600 hover:underline" onClick={async () => { await fetch(`/api/v1/profiles/${p.name}`, { method: 'DELETE' }); load(); }}>Delete</button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section>
         <div className="flex items-center justify-between">
           <h2 className="font-medium">Sessions</h2>
-          {usage && <span className="text-sm text-zinc-500">{usage.running}/{usage.max_running} running · {usage.minutes_today.toFixed(1)}/{usage.max_minutes_per_day} min today</span>}
+          {usage && <span className="text-sm text-zinc-500">{usage.running}/{usage.max_running} running{usage.paused ? ` · ${usage.paused} paused` : ''} · {usage.minutes_today.toFixed(1)}/{usage.max_minutes_per_day} min today</span>}
         </div>
         <ul className="mt-3 divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           {sessions.length === 0 && <li className="py-2 text-zinc-500">No sessions yet. Create a key and run the quickstart, or start one here.</li>}

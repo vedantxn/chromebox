@@ -221,6 +221,18 @@ func (o *Orchestrator) forkVM(w http.ResponseWriter, r *http.Request) {
 // long enough for unused images to fill a node between back-to-back forks.)
 const forkImageGrace = 15 * time.Second
 
+// profileImageGrace: an image fetched for a profile is kept this long with no
+// session using it, so that the next session from the profile on that node
+// needs no download.
+const profileImageGrace = 5 * time.Minute
+
+func graceFor(image string) time.Duration {
+	if strings.HasPrefix(image, "fork-p-") {
+		return profileImageGrace
+	}
+	return forkImageGrace
+}
+
 // collectForks deletes fork images no VM uses any more, once they are older
 // than forkImageGrace.
 func (o *Orchestrator) collectForks(ctx context.Context) {
@@ -237,7 +249,7 @@ func (o *Orchestrator) collectForks(ctx context.Context) {
 	var stale []img
 	for node, s := range o.seen {
 		for _, b := range s.Status.Bases {
-			if base.IsFork(b.Name) && !used[b.Name] && time.Since(b.BuiltAt) > forkImageGrace {
+			if base.IsFork(b.Name) && !used[b.Name] && time.Since(b.BuiltAt) > graceFor(b.Name) {
 				stale = append(stale, img{node, b.Name})
 			}
 		}

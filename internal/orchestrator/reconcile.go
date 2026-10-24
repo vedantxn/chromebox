@@ -32,6 +32,7 @@ func (o *Orchestrator) reconcileLoop(ctx context.Context) {
 		}
 		o.markLost(ctx)
 		o.expire(ctx)
+		o.expirePaused(ctx)
 		o.collectForks(ctx)
 	}
 }
@@ -101,7 +102,7 @@ func (o *Orchestrator) fence(st api.Status) {
 		v, err := o.store.GetVM(info.ID)
 		switch {
 		case err != nil: // unknown to the database
-		case v.State == StateMigrating || v.State == StateCreating:
+		case v.State == StateMigrating || v.State == StateCreating || v.State == StatePausing:
 			continue // in flight: the operation decides
 		case v.State == StateLost || v.Node != st.Node:
 		default:

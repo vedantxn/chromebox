@@ -11,6 +11,11 @@ type=${2:-$CB_INSTANCE_TYPE}
 cpu_options=()
 [[ $type == *8i.* ]] && cpu_options=(--cpu-options NestedVirtualization=enabled)
 
+# Nodes get the storage role (paused sessions, profiles); the gateway gets the
+# one the autoscaler needs. Both are made by scripts/aws/storage.sh.
+profile=chromebox-node
+[[ $name == gateway ]] && profile=chromebox-gateway
+
 # Resolve the AMI once and pin it. Every node must boot the same image, because
 # a snapshot taken under one host kernel is not guaranteed to load under another.
 if [[ ! -s "$CB_AMI_FILE" ]]; then
@@ -29,6 +34,7 @@ id=$(aws ec2 run-instances \
   --instance-type "$type" \
   "${cpu_options[@]}" \
   --key-name "$CB_KEY_NAME" \
+  --iam-instance-profile "Name=$profile" \
   --subnet-id "$subnet" \
   --security-group-ids "$sg" \
   --block-device-mappings 'DeviceName=/dev/xvda,Ebs={VolumeSize=30,VolumeType=gp3,DeleteOnTermination=true}' \

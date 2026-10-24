@@ -39,12 +39,17 @@ func (s *Store) accountSchema() error {
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL,
 			ended_at TEXT NOT NULL DEFAULT '', end_reason TEXT NOT NULL DEFAULT '', migrations INTEGER NOT NULL DEFAULT 0)`,
-		eventSchema, eventIndex,
+		eventSchema, eventIndex, profileSchema,
 	} {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return err
 		}
 	}
+	// Added with pause/resume: when the session was paused (empty: running),
+	// and the seconds it has spent paused in earlier pauses, which do not
+	// count against its owner's browser minutes.
+	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN paused_at TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN paused_s REAL NOT NULL DEFAULT 0`)
 	return nil
 }
 
@@ -82,6 +87,9 @@ func (o *Orchestrator) accountRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/users/{uid}/sessions/{sid}", o.endSession)
 	mux.HandleFunc("POST /v1/users/{uid}/sessions/{sid}/migrate", o.migrateSession)
 	mux.HandleFunc("POST /v1/users/{uid}/sessions/{sid}/fork", o.forkSession)
+	o.profileRoutes(mux)
+	mux.HandleFunc("POST /v1/users/{uid}/sessions/{sid}/pause", o.pauseSession)
+	mux.HandleFunc("POST /v1/users/{uid}/sessions/{sid}/resume", o.resumeSession)
 	mux.HandleFunc("POST /v1/users/{uid}/sessions/{sid}/token", o.sessionToken)
 	mux.HandleFunc("GET /v1/users/{uid}/usage", o.usage)
 }
@@ -165,15 +173,26 @@ func (e limitError) Error() string { return e.msg }
 
 // checkLimits must be called with o.place held.
 func (o *Orchestrator) checkLimits(uid string) error {
-	var running, recent int
-	_ = o.store.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id = ? AND ended_at = ''`, uid).Scan(&running)
-	if running >= maxConcurrent {
-		return limitError{fmt.Sprintf("limit: at most %d sessions at a time; end one first", maxConcurrent)}
+	if err := o.checkRunning(uid); err != nil {
+		return err
 	}
+	var recent int
 	_ = o.store.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id = ? AND created_at > ?`, uid,
 		time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)).Scan(&recent)
 	if recent >= maxCreatesPerMin {
 		return limitError{fmt.Sprintf("limit: at most %d sessions per minute", maxCreatesPerMin)}
+	}
+	return nil
+}
+
+// checkRunning is the part of the limits that a browser coming back from a
+// pause must pass too: sessions running at once, and browser minutes today.
+// Paused sessions count toward neither. Call with o.place held.
+func (o *Orchestrator) checkRunning(uid string) error {
+	var running int
+	_ = o.store.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id = ? AND ended_at = '' AND paused_at = ''`, uid).Scan(&running)
+	if running >= maxConcurrent {
+		return limitError{fmt.Sprintf("limit: at most %d sessions at a time; end one first", maxConcurrent)}
 	}
 	if used := o.minutesToday(uid); used >= maxMinutesPerDay {
 		return limitError{fmt.Sprintf("limit: %d browser minutes per day used up", maxMinutesPerDay)}
@@ -183,28 +202,43 @@ func (o *Orchestrator) checkLimits(uid string) error {
 
 func (o *Orchestrator) minutesToday(uid string) float64 {
 	day := time.Now().UTC().Truncate(24 * time.Hour).Format(time.RFC3339Nano)
-	rows, err := o.store.db.Query(`SELECT created_at, ended_at FROM sessions WHERE user_id = ? AND created_at >= ?`, uid, day)
+	rows, err := o.store.db.Query(`SELECT created_at, ended_at, paused_at, paused_s FROM sessions WHERE user_id = ? AND created_at >= ?`, uid, day)
 	if err != nil {
 		return 0
 	}
 	defer rows.Close()
 	var total float64
 	for rows.Next() {
-		var c, e string
-		_ = rows.Scan(&c, &e)
+		var c, e, pa string
+		var ps float64
+		_ = rows.Scan(&c, &e, &pa, &ps)
 		start, _ := time.Parse(time.RFC3339Nano, c)
 		end := time.Now()
 		if e != "" {
 			end, _ = time.Parse(time.RFC3339Nano, e)
 		}
-		total += end.Sub(start).Minutes()
+		m := end.Sub(start).Minutes() - ps/60
+		if pa != "" && e == "" { // paused right now: that stretch is not browser time either
+			if t, err := time.Parse(time.RFC3339Nano, pa); err == nil {
+				m -= time.Since(t).Minutes()
+			}
+		}
+		total += max(m, 0)
 	}
 	return total
 }
 
 func (o *Orchestrator) createSession(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	vm, err := o.CreateFor(r.Context(), uid, "chrome-v1", sessionLifetime)
+	var in struct{ Profile string }
+	_ = json.NewDecoder(r.Body).Decode(&in) // an empty body: a fresh browser
+	var vm api.VM
+	var err error
+	if in.Profile != "" {
+		vm, _, err = o.CreateFromProfile(r.Context(), uid, in.Profile)
+	} else {
+		vm, err = o.CreateFor(r.Context(), uid, "chrome-v1", sessionLifetime)
+	}
 	if err != nil {
 		code := http.StatusInternalServerError
 		var le limitError
@@ -213,6 +247,8 @@ func (o *Orchestrator) createSession(w http.ResponseWriter, r *http.Request) {
 			code = http.StatusTooManyRequests
 		case strings.HasPrefix(err.Error(), "no node"):
 			code = http.StatusServiceUnavailable
+		case strings.HasPrefix(err.Error(), "no profile"):
+			code = http.StatusNotFound
 		}
 		http.Error(w, err.Error(), code)
 		return
@@ -388,10 +424,14 @@ func (o *Orchestrator) sessionToken(w http.ResponseWriter, r *http.Request) {
 
 func (o *Orchestrator) usage(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	var running int
-	_ = o.store.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id = ? AND ended_at = ''`, uid).Scan(&running)
+	var running, paused int
+	_ = o.store.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id = ? AND ended_at = '' AND paused_at = ''`, uid).Scan(&running)
+	_ = o.store.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id = ? AND ended_at = '' AND paused_at != ''`, uid).Scan(&paused)
+	var profiles int
+	_ = o.store.db.QueryRow(`SELECT COUNT(*) FROM profiles WHERE user_id = ?`, uid).Scan(&profiles)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"running": running, "max_running": maxConcurrent,
+		"running": running, "max_running": maxConcurrent, "paused": paused, "max_paused": maxPaused,
+		"profiles": profiles, "max_profiles": maxProfiles,
 		"minutes_today": o.minutesToday(uid), "max_minutes_per_day": maxMinutesPerDay,
 		"session_lifetime_minutes": sessionLifetime.Minutes(),
 	})

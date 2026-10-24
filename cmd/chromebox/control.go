@@ -236,6 +236,16 @@ func ctlCmd(args []string) error {
 		}
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
+	case "pause", "resume":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: chromebox ctl %s <id>", args[0])
+		}
+		var out any
+		if err := call("POST", "/v1/vms/"+args[1]+"/"+args[0], nil, &out); err != nil {
+			return err
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
 	case "fork":
 		if len(args) < 3 {
 			return fmt.Errorf("usage: chromebox ctl fork <id> <count>")

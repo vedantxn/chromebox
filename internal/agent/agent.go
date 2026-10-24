@@ -28,6 +28,7 @@ import (
 	"github.com/vedantxn/chromebox/internal/migrate"
 	"github.com/vedantxn/chromebox/internal/pageserver"
 	"github.com/vedantxn/chromebox/internal/remote"
+	"github.com/vedantxn/chromebox/internal/snapstore"
 	"github.com/vedantxn/chromebox/internal/timing"
 	"github.com/vedantxn/chromebox/internal/vm"
 )
@@ -54,6 +55,7 @@ type Agent struct {
 
 	pool    *pool // jailed Firecracker processes started ahead of time
 	metrics *agentMetrics
+	snaps   *snapstore.Store // snapshots in S3; nil without CHROMEBOX_SNAP_BUCKET
 }
 
 // outgoing is a VM that runs on another node but whose memory is still here:
@@ -70,6 +72,7 @@ func New(cfg Config) *Agent {
 		a.pool = p
 	}
 	a.metrics = newAgentMetrics(a)
+	a.snaps = openSnaps()
 	return a
 }
 
@@ -114,6 +117,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{id}/fork-image", a.forkImage)
 	mux.HandleFunc("DELETE /v1/bases/{name}", a.deleteBase)
 	a.imageRoutes(mux)
+	a.snapRoutes(mux)
 	mux.HandleFunc("POST /v1/vms/{id}/delta", a.putDelta)
 	return a.auth(mux)
 }
@@ -713,3 +717,5 @@ func capLater(p vm.Paths) {
 		}
 	}()
 }
+
+func decodeJSON(r *http.Request, v any) error { return json.NewDecoder(r.Body).Decode(v) }

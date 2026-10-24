@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/api"
@@ -107,6 +108,49 @@ func (c *Client) ForkImage(ctx context.Context, id, image string) (api.ForkImage
 	var out api.ForkImageResponse
 	err := c.do(ctx, http.MethodPost, "/v1/vms/"+id+"/fork-image", api.ForkImageRequest{Image: image}, &out)
 	return out, err
+}
+
+// Pause snapshots running VM id into storage under req.Prefix and stops it.
+func (c *Client) Pause(ctx context.Context, id string, req api.PauseRequest) (api.PauseResponse, error) {
+	var out api.PauseResponse
+	err := c.doTimeout(ctx, 3*time.Minute, http.MethodPost, "/v1/vms/"+id+"/pause", req, &out)
+	return out, err
+}
+
+// Resume starts VM id from the snapshot at req.Prefix.
+func (c *Client) Resume(ctx context.Context, id string, req api.ResumeRequest) (api.ResumeResponse, error) {
+	var out api.ResumeResponse
+	err := c.doTimeout(ctx, 3*time.Minute, http.MethodPost, "/v1/vms/"+id+"/resume", req, &out)
+	return out, err
+}
+
+// SaveProfile stores running VM id's state under req.Prefix; the VM runs on.
+func (c *Client) SaveProfile(ctx context.Context, id string, req api.SaveProfileRequest) (api.SaveProfileResponse, error) {
+	var out api.SaveProfileResponse
+	err := c.doTimeout(ctx, 3*time.Minute, http.MethodPost, "/v1/vms/"+id+"/save-profile", req, &out)
+	return out, err
+}
+
+// EnsureProfileImage has this node hold the profile snapshot at req.Prefix as
+// base req.Name, fetching it from storage if needed.
+func (c *Client) EnsureProfileImage(ctx context.Context, req api.ProfileImageRequest) (api.ProfileImageResponse, error) {
+	var out api.ProfileImageResponse
+	err := c.doTimeout(ctx, 3*time.Minute, http.MethodPost, "/v1/profile-images", req, &out)
+	return out, err
+}
+
+// DeleteSnapshots removes the stored snapshot under prefix.
+func (c *Client) DeleteSnapshots(ctx context.Context, prefix string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/snapshots?prefix="+url.QueryEscape(prefix), nil, nil)
+}
+
+// doTimeout is do with a longer deadline, for transfers to and from storage.
+func (c *Client) doTimeout(ctx context.Context, d time.Duration, method, path string, in, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	slow := *c
+	slow.http = &http.Client{Timeout: d}
+	return slow.do(ctx, method, path, in, out)
 }
 
 // DeleteBase removes a fork image from the node.

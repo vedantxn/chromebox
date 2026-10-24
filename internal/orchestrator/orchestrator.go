@@ -113,6 +113,22 @@ func (o *Orchestrator) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/nodes", o.listNodes)
 	mux.HandleFunc("POST /v1/vms/{id}/migrate", o.migrateVM)
 	mux.HandleFunc("POST /v1/vms/{id}/fork", o.forkVM)
+	mux.HandleFunc("POST /v1/vms/{id}/pause", func(w http.ResponseWriter, r *http.Request) {
+		res, err := o.Pause(r.Context(), r.PathValue("id"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	})
+	mux.HandleFunc("POST /v1/vms/{id}/resume", func(w http.ResponseWriter, r *http.Request) {
+		res, err := o.Resume(r.Context(), r.PathValue("id"), nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	})
 	mux.HandleFunc("POST /v1/vms/{id}/token", o.issueToken)
 	o.accountRoutes(mux)
 	mux.HandleFunc("POST /v1/nodes/{name}/drain", o.drainNode)
@@ -237,7 +253,7 @@ func (o *Orchestrator) create(ctx context.Context, baseName string, ttl time.Dur
 	}
 	o.place.Lock()
 	if o.cfg.MaxVMs > 0 {
-		if vms, err := o.store.ListVMs(); err == nil && len(vms) >= o.cfg.MaxVMs {
+		if vms, err := o.store.ListVMs(); err == nil && countLive(vms) >= o.cfg.MaxVMs {
 			o.place.Unlock()
 			return api.VM{}, api.CreateVMResponse{}, fmt.Errorf("no node: at capacity (%d VMs)", o.cfg.MaxVMs)
 		}
@@ -320,6 +336,11 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("unknown vm %q", id)
 	}
 	_ = o.store.SetState(id, StateDeleting)
+	if vm.State == StatePaused { // its snapshot is in storage, not on a node
+		if prefix, _, err := o.store.SnapInfo(id); err == nil {
+			go o.deleteSnapshots(prefix)
+		}
+	}
 	o.delRoute(ctx, vm.NetIndex)
 	o.closeConns(vm.NetIndex)
 	if ag, err := o.agentFor(vm.Node); err == nil {
@@ -475,4 +496,15 @@ func (o *Orchestrator) closeConns(n int) int {
 	var out struct{ Closed int }
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	return out.Closed
+}
+
+// countLive counts the VMs that occupy a node: paused ones live in storage.
+func countLive(vms []api.VM) int {
+	n := 0
+	for _, v := range vms {
+		if v.State != StatePaused {
+			n++
+		}
+	}
+	return n
 }

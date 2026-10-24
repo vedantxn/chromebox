@@ -18,6 +18,8 @@ function describe(e: Ev): { title: string; sub?: string; bad?: boolean } {
     case 'migration_failed': return { title: 'migration failed', sub: String(d.error), bad: true };
     case 'paused': return { title: 'paused', sub: d.stored_mib ? `${n0(d.stored_mib)} MiB stored · browser stopped in ${n0(d.paused_ms)} ms` : undefined };
     case 'resumed': return { title: `resumed on ${d.node}`, sub: d.resume_ms ? `${n0(d.resume_ms)} ms` : undefined };
+    case 'profile_saved': return { title: `saved as profile “${d.name}”`, sub: `browser paused ${n0(d.paused_ms)} ms · ${n0(d.stored_mib)} MiB stored` };
+    case 'started_from_profile': return { title: `started from profile “${d.profile}”`, sub: d.fetched ? `fetched to ${d.image_node} in ${n0(d.image_download_ms)} ms` : 'profile already on this machine' };
     case 'ended': return { title: `ended: ${d.reason}` };
     default: return { title: e.kind };
   }
@@ -35,6 +37,10 @@ export default function Live({ id }: { id: string }) {
   const [status, setStatus] = useState('connecting');
   const [events, setEvents] = useState<Ev[]>([]);
   const [migrateError, setMigrateError] = useState('');
+  const [profileName, setProfileName] = useState('');
+  const [profileMsg, setProfileMsg] = useState('');
+  const [sleeping, setSleeping] = useState<'pausing' | 'resuming' | null>(null);
+  const [epoch, setEpoch] = useState(0); // bumped when the browser comes back, to reconnect the live view
   const [busy, setBusy] = useState(false);
   const [fork, setFork] = useState<{ pausedMs?: number; sessions?: { id: string }[]; error?: string } | null>(null);
   const [forking, setForking] = useState(false);
@@ -109,7 +115,7 @@ export default function Live({ id }: { id: string }) {
       };
     })();
     return () => { closed = true; ws.current?.close(); };
-  }, [id, send]);
+  }, [id, send, epoch]);
 
   // Fork: a copy of this browser, its pages, cookies and storage, in a new session.
   const forkOne = async () => {
@@ -125,6 +131,31 @@ export default function Live({ id }: { id: string }) {
     setMigrateError(r.ok ? '' : String(d.error ?? 'migration failed'));
     setBusy(false);
   };
+  // Save this browser's pages, cookies and storage as a profile; it keeps running.
+  const saveProfile = async () => {
+    setProfileMsg('saving…');
+    const r = await fetch('/api/v1/profiles', { method: 'POST', body: JSON.stringify({ session: id, name: profileName }) });
+    const d = await r.json();
+    setProfileMsg(r.ok ? `saved “${d.name}” (${d.storedMiB.toFixed(0)} MiB; this browser paused ${d.pausedMs.toFixed(0)} ms)` : String(d.error ?? 'could not save'));
+    if (r.ok) setProfileName('');
+  };
+  // Pause stores the browser and frees its machine; resume brings it back on any machine.
+  const pause = async () => {
+    setSleeping('pausing');
+    setMigrateError('');
+    const r = await fetch(`/api/v1/sessions/${id}/pause`, { method: 'POST' });
+    if (!r.ok) setMigrateError(String((await r.json()).error ?? 'pause failed'));
+    setFrame(null);
+    setSleeping(null);
+  };
+  const resume = async () => {
+    setSleeping('resuming');
+    setMigrateError('');
+    const r = await fetch(`/api/v1/sessions/${id}/resume`, { method: 'POST' });
+    if (!r.ok) setMigrateError(String((await r.json()).error ?? 'resume failed'));
+    else setEpoch((e) => e + 1);
+    setSleeping(null);
+  };
   const navigate = () => pageSession.current && send('Page.navigate', { url }, pageSession.current);
   const end = async () => { await fetch(`/api/v1/sessions/${id}`, { method: 'DELETE' }); location.href = '/dashboard'; };
 
@@ -138,7 +169,10 @@ export default function Live({ id }: { id: string }) {
         </div>
         <div className="mt-3 aspect-[16/10] overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900">
           {frame ? <img src={frame} alt="live view of the browser" className="h-full w-full object-contain" />
-            : <div className="flex h-full items-center justify-center text-sm text-zinc-500">{status === 'connected' ? 'waiting for the first frame…' : status}</div>}
+            : <div className="flex h-full items-center justify-center px-6 text-center text-sm text-zinc-500">
+                {sess?.status === 'paused' ? 'Paused: stored for later, using no machine. Resume to bring it back exactly as it was.'
+                  : status === 'connected' ? 'waiting for the first frame…' : status}
+              </div>}
         </div>
         <p className="mt-2 text-xs text-zinc-500">
           {status} · {fps} fps · last frame {(lastFrameAgo / 1000).toFixed(1)} s ago
@@ -150,17 +184,39 @@ export default function Live({ id }: { id: string }) {
           <p className="font-medium">{sess?.status ?? '…'}{sess?.node ? ` on ${sess.node}` : ''}</p>
           {sess?.expiresAt && <p className="text-xs text-zinc-500">ends {new Date(sess.expiresAt).toLocaleTimeString()}</p>}
         </div>
-        <div className="flex gap-2">
-          <button disabled={busy || sess?.status !== 'running'} onClick={migrate}
-            className="rounded-md bg-zinc-900 px-3 py-1.5 text-white disabled:opacity-40 dark:bg-white dark:text-zinc-900">
-            {busy ? 'Moving…' : 'Migrate now'}
-          </button>
-          <button disabled={forking || sess?.status !== 'running'} onClick={forkOne}
-            className="rounded-md border border-zinc-300 px-3 py-1.5 disabled:opacity-40 dark:border-zinc-700">
-            {forking ? 'Forking…' : 'Fork'}
-          </button>
+        <div className="flex flex-wrap gap-2">
+          {sess?.status === 'paused' || sleeping === 'resuming' ? (
+            <button disabled={sleeping === 'resuming'} onClick={resume}
+              className="rounded-md bg-zinc-900 px-3 py-1.5 text-white disabled:opacity-40 dark:bg-white dark:text-zinc-900">
+              {sleeping === 'resuming' ? 'Resuming…' : 'Resume'}
+            </button>
+          ) : (<>
+            <button disabled={busy || sess?.status !== 'running'} onClick={migrate}
+              className="rounded-md bg-zinc-900 px-3 py-1.5 text-white disabled:opacity-40 dark:bg-white dark:text-zinc-900">
+              {busy ? 'Moving…' : 'Migrate now'}
+            </button>
+            <button disabled={forking || sess?.status !== 'running'} onClick={forkOne}
+              className="rounded-md border border-zinc-300 px-3 py-1.5 disabled:opacity-40 dark:border-zinc-700">
+              {forking ? 'Forking…' : 'Fork'}
+            </button>
+            <button disabled={sleeping === 'pausing' || sess?.status !== 'running'} onClick={pause}
+              className="rounded-md border border-zinc-300 px-3 py-1.5 disabled:opacity-40 dark:border-zinc-700">
+              {sleeping === 'pausing' ? 'Pausing…' : 'Pause'}
+            </button>
+          </>)}
           <button onClick={end} className="rounded-md border border-zinc-300 px-3 py-1.5 dark:border-zinc-700">End</button>
         </div>
+        {sess?.status === 'running' && (
+          <div>
+            <div className="flex gap-2">
+              <input value={profileName} onChange={(e) => setProfileName(e.target.value.toLowerCase())} placeholder="profile name"
+                className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-700" />
+              <button disabled={!profileName} onClick={saveProfile}
+                className="rounded-md border border-zinc-300 px-2 py-1 text-xs disabled:opacity-40 dark:border-zinc-700">Save profile</button>
+            </div>
+            {profileMsg && <p className="mt-1 text-xs text-zinc-500">{profileMsg}</p>}
+          </div>
+        )}
         {fork && (
           <p className="text-xs text-zinc-500">
             {fork.error ? <span className="text-red-600">{fork.error}</span> : <>

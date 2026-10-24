@@ -44,6 +44,8 @@ Puppeteer works too: `puppeteer.connect({ browserWSEndpoint: session.connectUrl 
 | `baton.sessions.create()` | start a browser → `Session` with `connectUrl` |
 | `baton.sessions.list()` / `get(id)` / `delete(id)` | |
 | `session.migrate()` | move it to another machine → `{ from, to, pausedMs, unreachableMs }` |
+| `session.pause()` / `session.resume()` | store the running browser and free its machine (idle browsers cost nothing, up to 7 days); `resume()` brings it back exactly as it was, on any machine, with a fresh `connectUrl` |
+| `session.saveProfile(name)` / `baton.profiles.list()` / `delete(name)` | save a running browser's pages, cookies and storage as a profile (it keeps running); `baton.sessions.create({ profile: name })` starts a new session already logged in |
 | `session.fork(n)` | copy the running browser into `n` new sessions: same pages, cookies and storage, each with its own `connectUrl` → `{ pausedMs, sessions, errors }` |
 | `session.liveUrl()` | short-lived URL for watching it |
 | `session.close()` | end it |

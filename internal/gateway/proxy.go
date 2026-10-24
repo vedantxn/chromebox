@@ -113,12 +113,25 @@ func (p *Proxy) serveToken(w http.ResponseWriter, r *http.Request) {
 	p.rp.ServeHTTP(w, r.WithContext(ctx))
 }
 
+// vmClient talks plain HTTP to browsers in VMs, never reusing a connection.
+// A VM's address is recycled as soon as it is deleted, and a new VM can have
+// the address of one that was killed seconds ago. A pooled keep-alive
+// connection to the old one is dead without anyone having said so: the
+// request went down it and hung until its timeout (found when a session
+// deleted and one created straight after got the same address). These
+// requests are tiny and the network is local, so a new connection each time
+// costs nothing worth measuring.
+var vmClient = &http.Client{Transport: &http.Transport{
+	DisableKeepAlives: true,
+	DialContext:       (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+}}
+
 // browserPath asks Chrome for its browser-level WebSocket path.
 func browserPath(ctx context.Context, target string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+target+"/json/version", nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := vmClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -274,9 +287,10 @@ func newReverseProxy() *httputil.ReverseProxy {
 	transport := &http.Transport{
 		// Short keepalive probes keep the long-lived upstream connection from
 		// being mistaken for dead, and detect it if it really is.
-		DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 5 * time.Second}).DialContext,
-		MaxIdleConnsPerHost: 4,
-		IdleConnTimeout:     30 * time.Second,
+		DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 5 * time.Second}).DialContext,
+		// No pooling: see vmClient. (WebSocket connections are taken over and
+		// never pooled; this is for the /json discovery requests.)
+		DisableKeepAlives: true,
 	}
 	return &httputil.ReverseProxy{
 		Transport: transport,
