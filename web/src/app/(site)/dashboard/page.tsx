@@ -7,7 +7,7 @@ export const metadata = { title: "Dashboard" };
 
 export default async function Page() {
   const session = await auth();
-  if (!session?.uid) redirect("/");
+  if (!session?.uid) redirect("/sign-in");
   return (
     <Frame className="pt-12 pb-24 sm:pt-16 sm:pb-32">
       <header className="flex flex-wrap items-end justify-between gap-4">

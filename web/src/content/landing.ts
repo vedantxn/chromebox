@@ -89,7 +89,7 @@ export const freeTier = [
   ["Sessions at once", "2"],
   ["Longest session", "15 minutes"],
   ["Browser time", "60 minutes a day"],
-  ["Sign in", "GitHub, no card"],
+  ["Sign up", "Email or GitHub, no card"],
 ] as const;
 
 // Only clients we have run against Baton ourselves.

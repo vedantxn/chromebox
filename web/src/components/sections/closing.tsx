@@ -30,7 +30,7 @@ export function Closing() {
               site. MIT, with every benchmark&apos;s raw samples next to the code.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <GetKey inline />
+              <GetKey />
               <ButtonLink href={batonRepo.url} variant="secondary" size="lg">
                 <GitHubMark />
                 Read the source

@@ -27,7 +27,7 @@ const (
 )
 
 // accountSchema adds the product tables to the orchestrator's database: users
-// (from GitHub), their API keys (only a hash is kept), and one row per browser
+// (from GitHub, or an email and password), their API keys (only a hash is kept), and one row per browser
 // session for limits and history.
 func (s *Store) accountSchema() error {
 	for _, stmt := range []string{
@@ -50,7 +50,7 @@ func (s *Store) accountSchema() error {
 	// count against its owner's browser minutes.
 	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN paused_at TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN paused_s REAL NOT NULL DEFAULT 0`)
-	return nil
+	return s.passwordSchema()
 }
 
 func randHex(n int) string {
@@ -76,6 +76,8 @@ type Session struct {
 
 func (o *Orchestrator) accountRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/users", o.upsertUser)
+	mux.HandleFunc("POST /v1/users/signup", o.signup)
+	mux.HandleFunc("POST /v1/users/login", o.login)
 	mux.HandleFunc("POST /v1/keys/verify", o.verifyKey)
 	mux.HandleFunc("GET /v1/users/{uid}/keys", o.listKeys)
 	mux.HandleFunc("POST /v1/users/{uid}/keys", o.createKey)

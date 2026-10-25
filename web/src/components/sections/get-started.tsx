@@ -15,8 +15,8 @@ export function FreeTierCard() {
           Free to start
         </h3>
         <p className="mt-1.5 text-[14px] leading-[1.55] text-muted-foreground">
-          Sign in with GitHub and the dashboard gives you an API key, your
-          sessions and every event they logged.
+          Make an account with your email or GitHub, and the dashboard gives
+          you an API key, your sessions and every event they logged.
         </p>
         <dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-rule pt-4 text-[13px]">
           {freeTier.map(([k, v]) => (
@@ -34,7 +34,7 @@ export function FreeTierCard() {
           <CopyButton value={install.key} className="-my-1" />
         </div>
         <div className="mt-5 pb-5 sm:pb-6">
-          <GetKey size="md" inline />
+          <GetKey size="md" />
         </div>
       </div>
       <div className="flex flex-wrap gap-x-6 gap-y-2 border-t border-rule px-5 py-3.5 sm:px-6">

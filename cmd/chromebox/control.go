@@ -47,6 +47,10 @@ func runAgent(listen string) error {
 // on :9222. Strategy from CHROMEBOX_STRATEGY (spread or pack).
 func runOrchestrator(listen string) error {
 	maxVMs, _ := strconv.Atoi(os.Getenv("CHROMEBOX_MAX_VMS"))
+	db := os.Getenv("CHROMEBOX_DB") // a local copy, for development
+	if db == "" {
+		db = "/var/lib/chromebox/orchestrator.db"
+	}
 	auto := orchestrator.AutoscaleFromEnv()
 	var instances orchestrator.Instances
 	if auto.Enabled {
@@ -58,7 +62,7 @@ func runOrchestrator(listen string) error {
 	}
 	o, err := orchestrator.New(orchestrator.Config{
 		Autoscale: auto, Instances: instances, Warm: orchestrator.WarmFromEnv(),
-		Token: os.Getenv("CHROMEBOX_TOKEN"), DBPath: "/var/lib/chromebox/orchestrator.db",
+		Token: os.Getenv("CHROMEBOX_TOKEN"), DBPath: db,
 		APIListen: listen, ProxyAdmin: "http://127.0.0.1:9301",
 		SessionSecret: []byte(os.Getenv("CHROMEBOX_SESSION_SECRET")), MaxVMs: maxVMs,
 		PublicURL: os.Getenv("CHROMEBOX_PUBLIC_URL"),

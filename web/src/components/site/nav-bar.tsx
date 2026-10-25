@@ -8,6 +8,7 @@ import { Logo } from "@/components/logo";
 import { cn } from "@/lib/cn";
 import { formatStars } from "@/lib/format";
 import { ButtonLink, GitHubMark } from "./button";
+import { AccountLink } from "./get-key";
 import { ThemeToggle } from "./theme-toggle";
 
 export type NavLink = { href: string; label: string };
@@ -101,6 +102,7 @@ export function NavBar({
         </nav>
 
         <div className="ml-auto flex items-center gap-1.5">
+          <AccountLink />
           <ThemeToggle />
           <ButtonLink href={repoUrl} variant="primary" size="sm">
             <GitHubMark className="size-3.5" />

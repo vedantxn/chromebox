@@ -8,7 +8,7 @@ export const metadata = { title: "Session" };
 
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
-  if (!session?.uid) redirect("/");
+  if (!session?.uid) redirect("/sign-in");
   const { id } = await params;
   return (
     <Frame className="pt-10 pb-24 sm:pt-14 sm:pb-32">

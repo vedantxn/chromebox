@@ -68,7 +68,7 @@ const steps = [
     title: "Get a key",
     body: (
       <>
-        Sign in with GitHub. The <Link href="/dashboard">dashboard</Link> makes API keys, shows each
+        <Link href="/sign-up">Make an account</Link> with your email or GitHub. The dashboard makes API keys, shows each
         one once, and lists your sessions with everything that happened to them.
       </>
     ),

@@ -74,6 +74,8 @@ type Orchestrator struct {
 
 	opMu   sync.Mutex
 	lastOp map[string]time.Time // node -> when an operation last touched it (see touch)
+
+	tries attempts // failed sign-ins and new accounts, for their limits
 }
 
 func New(cfg Config) (*Orchestrator, error) {

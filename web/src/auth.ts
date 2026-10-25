@@ -12,6 +12,11 @@ class DeviceFlow extends CredentialsSignin {
   constructor(code: string) { super(); this.code = code; }
 }
 
+// Why an email sign-in or sign-up failed, in words the form can show as they are.
+class PasswordRefused extends CredentialsSignin {
+  constructor(message: string) { super(); this.code = message; }
+}
+
 // GitHub login through the device flow (the one GitHub designed for devices
 // without a browser). The sign-in page shows a short code; the user enters it
 // at github.com/login/device; this server then exchanges the device code for a
@@ -20,6 +25,21 @@ class DeviceFlow extends CredentialsSignin {
 // and is not kept. On first sign-in the GitHub account becomes a Baton user.
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
+    // Email and password. The orchestrator keeps the account and an argon2id
+    // hash of the password; this server only passes what was typed through,
+    // with the visitor's address for the new-accounts-per-address limit.
+    Credentials({
+      id: 'password',
+      credentials: { email: {}, password: {}, mode: {} },
+      async authorize(c, req) {
+        const signup = c.mode === 'signup';
+        const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim();
+        const r = await orch<{ id: string; login: string }>('POST', signup ? '/v1/users/signup' : '/v1/users/login',
+          { email: c.email, password: c.password, ip: signup ? ip : undefined });
+        if (!r.ok) throw new PasswordRefused(r.status >= 500 ? 'Something went wrong; try again.' : (r.error ?? 'Sign-in failed.'));
+        return { id: r.data.id, name: r.data.login };
+      },
+    }),
     Credentials({
       id: 'github-device',
       credentials: { deviceCode: {} },
@@ -45,7 +65,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       },
     }),
   ],
-  pages: { signIn: '/' },
+  pages: { signIn: '/sign-in' },
   callbacks: {
     async jwt({ token, user }) {
       if (user) { token.uid = user.id; token.login = user.name ?? undefined; }
