@@ -13,7 +13,7 @@ const columns = [
       { href: "/docs", label: "Docs" },
       { href: "/dashboard", label: "Dashboard" },
       { href: sdk.url, label: "batonvm on npm" },
-      { href: "/#sdks", label: "REST API" },
+      { href: "/docs#rest", label: "REST API" },
     ],
   },
   {

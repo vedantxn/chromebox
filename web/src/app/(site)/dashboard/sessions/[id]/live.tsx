@@ -1,5 +1,8 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Button } from '@/components/site/button';
+import { Panel } from '@/components/site/page';
+import { StatusDot } from '../../ui';
 
 type Sess = { id: string; status: string; node?: string; expiresAt?: string; migrations: number; endReason?: string };
 type Ev = { at: string; kind: string; detail?: Record<string, number | string | boolean> };
@@ -159,90 +162,109 @@ export default function Live({ id }: { id: string }) {
   const navigate = () => pageSession.current && send('Page.navigate', { url }, pageSession.current);
   const end = async () => { await fetch(`/api/v1/sessions/${id}`, { method: 'DELETE' }); location.href = '/dashboard'; };
 
+  const running = sess?.status === 'running';
+  const paused = sess?.status === 'paused';
+  const input = 'h-8 min-w-0 rounded-sm bg-muted px-3 font-mono text-[12.5px] text-foreground outline-none transition-shadow placeholder:text-subtle focus:shadow-[0_0_0_1.5px_var(--brand)]';
   return (
-    <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_280px]">
-      <div>
-        <div className="flex gap-2">
-          <input value={url} onChange={(e) => setUrl(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && navigate()}
-            className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-transparent px-3 py-1.5 text-sm dark:border-zinc-700" />
-          <button onClick={navigate} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">Go</button>
+    <div className="mt-8 grid gap-5 lg:grid-cols-12">
+      <Panel className="min-w-0 lg:col-span-8">
+        <div className="flex items-center gap-3 border-b border-rule px-3 py-2 sm:px-4">
+          <span aria-hidden="true" className="hidden gap-1.5 sm:flex">
+            <span className="size-2.5 rounded-full bg-rule-strong" />
+            <span className="size-2.5 rounded-full bg-rule-strong" />
+            <span className="size-2.5 rounded-full bg-rule-strong" />
+          </span>
+          <form className="flex min-w-0 flex-1 gap-2" onSubmit={(e) => { e.preventDefault(); navigate(); }}>
+            <input aria-label="Address" value={url} onChange={(e) => setUrl(e.target.value)} className={`${input} flex-1`} />
+            <Button size="sm" variant="secondary" type="submit">Go</Button>
+          </form>
+          <span className="hidden items-center gap-1.5 font-mono text-[11px] text-subtle sm:flex">
+            <StatusDot status={sess?.status} />
+            {paused ? 'PAUSED' : status === 'connected' ? 'LIVE' : status.toUpperCase()}
+            {sess?.node ? ` · ${sess.node}` : ''}
+          </span>
         </div>
-        <div className="mt-3 aspect-[16/10] overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="aspect-[16/10] bg-stage">
           {frame ? <img src={frame} alt="live view of the browser" className="h-full w-full object-contain" />
-            : <div className="flex h-full items-center justify-center px-6 text-center text-sm text-zinc-500">
-                {sess?.status === 'paused' ? 'Paused: stored for later, using no machine. Resume to bring it back exactly as it was.'
-                  : status === 'connected' ? 'waiting for the first frame…' : status}
+            : <div className="flex h-full items-center justify-center px-6 text-center text-[14px] text-subtle">
+                {paused ? 'Paused: stored for later, using no machine. Resume to bring it back exactly as it was.'
+                  : status === 'connected' ? 'Waiting for the first frame…' : status}
               </div>}
         </div>
-        <p className="mt-2 text-xs text-zinc-500">
-          {status} · {fps} fps · last frame {(lastFrameAgo / 1000).toFixed(1)} s ago
+        <p className="tabular flex flex-wrap gap-x-3 border-t border-rule px-4 py-2 font-mono text-[11.5px] text-subtle">
+          <span>{status}</span><span>{fps} fps</span><span>last frame {(lastFrameAgo / 1000).toFixed(1)} s ago</span>
         </p>
-      </div>
-      <aside className="space-y-5 text-sm">
-        <div>
-          <p className="text-zinc-500">Status</p>
-          <p className="font-medium">{sess?.status ?? '…'}{sess?.node ? ` on ${sess.node}` : ''}</p>
-          {sess?.expiresAt && <p className="text-xs text-zinc-500">ends {new Date(sess.expiresAt).toLocaleTimeString()}</p>}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {sess?.status === 'paused' || sleeping === 'resuming' ? (
-            <button disabled={sleeping === 'resuming'} onClick={resume}
-              className="rounded-md bg-zinc-900 px-3 py-1.5 text-white disabled:opacity-40 dark:bg-white dark:text-zinc-900">
-              {sleeping === 'resuming' ? 'Resuming…' : 'Resume'}
-            </button>
-          ) : (<>
-            <button disabled={busy || sess?.status !== 'running'} onClick={migrate}
-              className="rounded-md bg-zinc-900 px-3 py-1.5 text-white disabled:opacity-40 dark:bg-white dark:text-zinc-900">
-              {busy ? 'Moving…' : 'Migrate now'}
-            </button>
-            <button disabled={forking || sess?.status !== 'running'} onClick={forkOne}
-              className="rounded-md border border-zinc-300 px-3 py-1.5 disabled:opacity-40 dark:border-zinc-700">
-              {forking ? 'Forking…' : 'Fork'}
-            </button>
-            <button disabled={sleeping === 'pausing' || sess?.status !== 'running'} onClick={pause}
-              className="rounded-md border border-zinc-300 px-3 py-1.5 disabled:opacity-40 dark:border-zinc-700">
-              {sleeping === 'pausing' ? 'Pausing…' : 'Pause'}
-            </button>
-          </>)}
-          <button onClick={end} className="rounded-md border border-zinc-300 px-3 py-1.5 dark:border-zinc-700">End</button>
-        </div>
-        {sess?.status === 'running' && (
-          <div>
-            <div className="flex gap-2">
-              <input value={profileName} onChange={(e) => setProfileName(e.target.value.toLowerCase())} placeholder="profile name"
-                className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-700" />
-              <button disabled={!profileName} onClick={saveProfile}
-                className="rounded-md border border-zinc-300 px-2 py-1 text-xs disabled:opacity-40 dark:border-zinc-700">Save profile</button>
-            </div>
-            {profileMsg && <p className="mt-1 text-xs text-zinc-500">{profileMsg}</p>}
+      </Panel>
+
+      <aside className="min-w-0 space-y-5 lg:col-span-4">
+        <Panel>
+          <div className="px-5 py-4">
+            <p className="label-mono text-subtle">Status</p>
+            <p className="mt-1.5 flex items-center gap-2 text-[16px] font-medium">
+              <StatusDot status={sess?.status} />
+              {sess?.status ?? '…'}{sess?.node ? ` on ${sess.node}` : ''}
+            </p>
+            {sess?.expiresAt && <p className="mt-0.5 text-[13px] text-subtle">ends {new Date(sess.expiresAt).toLocaleTimeString()}</p>}
           </div>
-        )}
-        {fork && (
-          <p className="text-xs text-zinc-500">
-            {fork.error ? <span className="text-red-600">{fork.error}</span> : <>
-              Forked (this browser paused {fork.pausedMs?.toFixed(0)} ms):{' '}
-              {fork.sessions?.map((s) => <a key={s.id} href={`/dashboard/sessions/${s.id}`} className="font-mono underline">{s.id}</a>)}
-              {' '}has the same pages, cookies and storage.
-            </>}
-          </p>
-        )}
-        <div>
-          <p className="text-zinc-500">Events</p>
-          {migrateError && <p className="mt-1 text-xs text-red-600">{migrateError}</p>}
-          <ul className="mt-1 space-y-2">
-            {events.length === 0 && <li className="text-zinc-500">Nothing yet.</li>}
+          <div className="flex flex-wrap gap-2 border-t border-rule px-5 py-4">
+            {paused || sleeping === 'resuming' ? (
+              <Button size="sm" variant="primary" disabled={sleeping === 'resuming'} onClick={resume}>
+                {sleeping === 'resuming' ? 'Resuming…' : 'Resume'}
+              </Button>
+            ) : (<>
+              <Button size="sm" variant="primary" disabled={busy || !running} onClick={migrate}>
+                {busy ? 'Moving…' : 'Migrate now'}
+              </Button>
+              <Button size="sm" variant="secondary" disabled={forking || !running} onClick={forkOne}>
+                {forking ? 'Forking…' : 'Fork'}
+              </Button>
+              <Button size="sm" variant="secondary" disabled={sleeping === 'pausing' || !running} onClick={pause}>
+                {sleeping === 'pausing' ? 'Pausing…' : 'Pause'}
+              </Button>
+            </>)}
+            <Button size="sm" variant="ghost" onClick={end}>End</Button>
+          </div>
+          {migrateError && <p className="border-t border-rule px-5 py-3 text-[13px] text-brand-ink">{migrateError}</p>}
+          {fork && (
+            <p className="border-t border-rule px-5 py-3 text-[13px] text-muted-foreground">
+              {fork.error ? <span className="text-brand-ink">{fork.error}</span> : <>
+                Forked; this browser paused {fork.pausedMs?.toFixed(0)} ms.{' '}
+                {fork.sessions?.map((s) => <a key={s.id} href={`/dashboard/sessions/${s.id}`} className="font-mono text-foreground underline underline-offset-[3px]">{s.id}</a>)}
+                {' '}has the same pages, cookies and storage.
+              </>}
+            </p>
+          )}
+          {running && (
+            <div className="border-t border-rule px-5 py-4">
+              <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (profileName) saveProfile(); }}>
+                <input aria-label="Profile name" value={profileName} onChange={(e) => setProfileName(e.target.value.toLowerCase())} placeholder="profile name"
+                  className={`${input} flex-1`} />
+                <Button size="sm" variant="secondary" type="submit" disabled={!profileName}>Save profile</Button>
+              </form>
+              {profileMsg && <p className="mt-2 text-[13px] text-subtle">{profileMsg}</p>}
+            </div>
+          )}
+        </Panel>
+
+        <Panel>
+          <div className="border-b border-rule px-5 py-3">
+            <h2 className="text-[15px] font-medium tracking-[-0.01em]">Events</h2>
+          </div>
+          <ol className="px-5 py-2">
+            {events.length === 0 && <li className="py-2 text-[14px] text-subtle">Nothing yet.</li>}
             {[...events].reverse().map((e, i) => {
               const x = describe(e);
               return (
-                <li key={i} className="rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
-                  <span className="text-zinc-500">{new Date(e.at).toLocaleTimeString()}</span>{' '}
-                  <span className={x.bad ? 'text-red-600' : ''}>{x.title}</span>
-                  {x.sub && <><br /><span className="text-zinc-500">{x.sub}</span></>}
+                <li key={i} className="relative border-l border-rule py-2 pl-4 text-[13.5px]">
+                  <span aria-hidden="true" className={`absolute top-[14px] -left-[3.5px] size-1.5 rounded-full ${x.bad ? 'bg-brand' : i === 0 ? 'bg-foreground' : 'bg-ink-400'}`} />
+                  <span className="tabular font-mono text-[11.5px] text-subtle">{new Date(e.at).toLocaleTimeString()}</span>
+                  <p className={x.bad ? 'text-brand-ink' : 'text-foreground'}>{x.title}</p>
+                  {x.sub && <p className="text-[12.5px] text-muted-foreground">{x.sub}</p>}
                 </li>
               );
             })}
-          </ul>
-        </div>
+          </ol>
+        </Panel>
       </aside>
     </div>
   );

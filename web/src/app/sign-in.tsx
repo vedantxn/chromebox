@@ -40,32 +40,3 @@ export function useDeviceSignIn() {
   const cancel = () => { attempt.current++; setStart(null); };
   return { start, error, copied, begin, copy, cancel };
 }
-
-export default function SignIn() {
-  const { start, error, copied, begin, copy } = useDeviceSignIn();
-  if (!start) {
-    return (
-      <div>
-        <button onClick={begin} className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white dark:bg-white dark:text-zinc-900">
-          Sign in with GitHub
-        </button>
-        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-      </div>
-    );
-  }
-  return (
-    <div className="rounded-lg border border-zinc-200 p-4 text-sm dark:border-zinc-800">
-      <p>Enter this code on GitHub:</p>
-      <button onClick={copy} className="mt-2 font-mono text-2xl font-semibold tracking-widest" title="Copy">
-        {start.userCode}
-      </button>
-      <span className="ml-2 text-xs text-zinc-500">{copied ? 'copied' : 'click to copy'}</span>
-      <p className="mt-3">
-        <a href={start.verificationUri} target="_blank" rel="noreferrer" className="font-medium underline">
-          Open github.com/login/device
-        </a>
-      </p>
-      <p className="mt-3 text-xs text-zinc-500">Waiting for GitHub… this page continues by itself.</p>
-    </div>
-  );
-}
