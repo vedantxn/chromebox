@@ -233,7 +233,7 @@ func LoadPrepared(ctx context.Context, p Paths, sw *timing.Stopwatch, uffdArgs .
 		SnapshotPath: JailVmstate,
 		MemBackend:   mem,
 		ResumeVM:     true,
-		// Off by default: see docs/learn/m2.md (C5) for why.
+		// Off by default.
 		ClockRealtime: os.Getenv("CHROMEBOX_CLOCK_REALTIME") != "",
 	}
 	if _, img, err := ImageOf(p); err == nil && img.Vsock {

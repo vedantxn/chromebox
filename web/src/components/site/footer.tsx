@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { DotField } from "@/components/fx/dot-field";
 import { Logo } from "@/components/logo";
-import { batonRepo, repoFile, repoTree, sdk } from "@/lib/shared";
+import { batonRepo, repoFile, sdk } from "@/lib/shared";
 import { StatusDot } from "./status-dot";
 import { ButtonLink, GitHubMark } from "./button";
 import { Frame } from "./frame";
@@ -22,7 +22,6 @@ const columns = [
       { href: "/benchmarks", label: "Benchmarks" },
       { href: "/status", label: "Status" },
       { href: "/benchmarks.json", label: "Raw benchmark data" },
-      { href: repoTree("docs/learn"), label: "Engineering notes" },
     ],
   },
   {

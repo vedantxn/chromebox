@@ -1,5 +1,7 @@
 # Private planning docs (office-hours sessions are never committed)
 docs/office-hours/
+# Our learning notes: private, never published
+docs/learn/
 
 # Build output
 /bin/

@@ -41,9 +41,9 @@ From a client in us-east-1, on 2 × m8i.large with nested virtualization (slower
 | Start a session from a saved, logged-in profile | 0.8 s | 0.9 s |
 | Memory a browser really costs (of 1 GiB): fresh / fork copy | 55 / 84 MiB | |
 
-On [Browser Arena](https://www.browserarena.ai)'s open-source lifecycle benchmark (create, connect, load example.com, release; 100 sessions from us-east-1) a Baton session takes **470 ms**, from 1,198 ms at the start of one day of work on it (releasing in the background, a pool of warmed-up browsers, one round trip for the API). That is 6th of the 13 providers Browser Arena publishes raw results for (theirs, not re-run by us; the fastest is at 156 ms). What is left is mostly Chrome on nested virtualization; [/benchmarks](https://batonvm.vercel.app/benchmarks) and [docs/learn/first-load.md](docs/learn/first-load.md) say where the rest goes and what it would take.
+On [Browser Arena](https://www.browserarena.ai)'s open-source lifecycle benchmark (create, connect, load example.com, release; 100 sessions from us-east-1) a Baton session takes **470 ms**, from 1,198 ms at the start of one day of work on it (releasing in the background, a pool of warmed-up browsers, one round trip for the API). That is 6th of the 13 providers Browser Arena publishes raw results for (theirs, not re-run by us; the fastest is at 156 ms). What is left is mostly Chrome on nested virtualization; [/benchmarks](https://batonvm.vercel.app/benchmarks) says where the rest goes and what it would take.
 
-On Steel's open-source [remote-browser benchmark](https://github.com/steel-dev/browserbench) (create, connect, load google.com, release; 300 runs from us-east-1) a Baton session takes **2,084 ms** at p50. Everything except the page load costs 735 ms, second-fastest of the six providers in [Steel's published table](https://steel.dev/blog/remote-browser-benchmark); the page load (1,358 ms) is where we lose, and [docs/learn/first-load.md](docs/learn/first-load.md) says why and what did not fix it. The other providers' numbers are Steel's, not re-run by us.
+On Steel's open-source [remote-browser benchmark](https://github.com/steel-dev/browserbench) (create, connect, load google.com, release; 300 runs from us-east-1) a Baton session takes **2,084 ms** at p50. Everything except the page load costs 735 ms, second-fastest of the six providers in [Steel's published table](https://steel.dev/blog/remote-browser-benchmark); the page load (1,358 ms) is where we lose, and [/benchmarks](https://batonvm.vercel.app/benchmarks) says why and what did not fix it. The other providers' numbers are Steel's, not re-run by us.
 
 **The headline demos:**
 - **Drain under load.** An agent clicks from article to article on Wikipedia while the machine its browser runs on is drained. Every step succeeds. One step is 1.6 s slower. Its tab's state survives. [`scripts/test/m5-headline.sh`](scripts/test/m5-headline.sh)
@@ -74,21 +74,19 @@ On Steel's open-source [remote-browser benchmark](https://github.com/steel-dev/b
 
 ## Problems worth reading about
 
-Each milestone has notes in [docs/learn/](docs/learn/) with the measurements, the dead ends, and gate questions.
-
-- **Migration downtime from 2.9 s to ~210 ms** ([m5](docs/learn/m5.md)): post-copy over userfaultfd, then shaving the pause.
+- **Migration downtime from 2.9 s to ~210 ms**: post-copy over userfaultfd, then shaving the pause.
   - Preparing the target before pausing.
   - Sending disk changes ahead of time.
   - `fallocate` for the snapshot file.
   - Reading guest memory through `/proc/<pid>/mem` before the pause, so the snapshot doesn't fault it in.
-- **The agent's stall is set by TCP, not by the pause** ([m2](docs/learn/m2.md), [m5](docs/learn/m5.md)): retransmits back off 0.2/0.6/1.4 s. VM routes carry `rto_min 20ms`.
-- **Connections broke on every second migration** ([m5](docs/learn/m5.md)): connection tracking doesn't migrate, so a returning VM's packets were INVALID.
-- **`sudo` cost 300 ms inside the outage** ([m5](docs/learn/m5.md)): the orchestrator now holds `CAP_NET_ADMIN` instead.
-- **Forked browsers were too identical** ([m6](docs/learn/m6.md)): the open tab's PRNG was copied, a reload didn't help, a new renderer did.
-- **Serving a sparse image through `mmap` refilled its holes** ([m6](docs/learn/m6.md)); `pread` doesn't.
-- **The jailer spent 34 ms waiting for RCU** while moving into a cgroup ([prod](docs/learn/prod.md)): `favordynmods`.
-- **A CPU cap cost 75 ms per start** ([prod](docs/learn/prod.md)): VMs start uncapped and are capped once running.
-- **systemd-logind deleted our snapshot memory** whenever an ssh session ended (`RemoveIPC`), and **an agent restart killed VMs mid-migration** (systemd's `KillMode`) ([prod](docs/learn/prod.md)).
+- **The agent's stall is set by TCP, not by the pause**: retransmits back off 0.2/0.6/1.4 s. VM routes carry `rto_min 20ms`.
+- **Connections broke on every second migration**: connection tracking doesn't migrate, so a returning VM's packets were INVALID.
+- **`sudo` cost 300 ms inside the outage**: the orchestrator now holds `CAP_NET_ADMIN` instead.
+- **Forked browsers were too identical**: the open tab's PRNG was copied, a reload didn't help, a new renderer did.
+- **Serving a sparse image through `mmap` refilled its holes**; `pread` doesn't.
+- **The jailer spent 34 ms waiting for RCU** while moving into a cgroup: `favordynmods`.
+- **A CPU cap cost 75 ms per start**: VMs start uncapped and are capped once running.
+- **systemd-logind deleted our snapshot memory** whenever an ssh session ended (`RemoveIPC`), and **an agent restart killed VMs mid-migration** (systemd's `KillMode`).
 
 ## Repository
 

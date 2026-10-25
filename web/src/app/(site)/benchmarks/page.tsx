@@ -5,7 +5,7 @@ import { ArenaChart } from "@/components/sections/benchmarks";
 import { MoreLink, Section } from "@/components/site/frame";
 import { DataTable, Note, PageHead, Panel, PanelHead, Stat, StatRow, type Cell } from "@/components/site/page";
 import { ours } from "@/content/landing";
-import { repoFile, repoTree } from "@/lib/shared";
+import { repoTree } from "@/lib/shared";
 
 // The numbers come from JSON files written by the benchmark scripts on a client in us-east-1
 // (scripts/bench/); nothing here is typed in by hand.
@@ -84,7 +84,6 @@ export default function Benchmarks() {
         <div className="flex flex-wrap gap-x-6 gap-y-2">
           <MoreLink href="/benchmarks.json">Raw samples</MoreLink>
           <MoreLink href={repoTree("scripts/bench")}>The scripts</MoreLink>
-          <MoreLink href={repoFile("docs/learn/first-load.md")}>Notes on the slow part</MoreLink>
         </div>
       </PageHead>
 

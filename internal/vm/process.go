@@ -91,7 +91,7 @@ func limits(p Paths) []string {
 
 // CPUCap is the cap a running VM gets: one CPU, so a busy browser cannot take
 // a 2-CPU node (equal weights alone left a neighbour's p99 at 3x its idle
-// value; the cap kept it near idle; docs/learn/prod.md, J2). The period is
+// value; the cap kept it near idle). The period is
 // 20 ms, not the default 100: a capped VM at its quota sleeps until the next
 // period, Firecracker's own threads included, and a short period bounds that
 // wait (a busy capped VM still migrates with a 217-242 ms pause).
