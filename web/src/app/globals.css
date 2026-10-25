@@ -1,26 +1,406 @@
 @import "tailwindcss";
+@import "@fontsource-variable/schibsted-grotesk";
+@import "@fontsource-variable/geist-mono";
+@import "@fontsource-variable/host-grotesk";
 
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Baton's theme, after the Kestrel site. Light by default: a warm off-white page, white panels, warm near-black ink,
+ * one rust accent used on the one active thing in a view. Soft corners
+ * on one scale (4/6/8/12/16), hairlines drawn as rings inside the shadow. Host Grotesk for
+ * headings, Schibsted Grotesk for text, Geist Mono for code and numbers only.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --radius: 0.5rem;
+  --background: #fafaf9;
+  --foreground: #171412;
+  --card: #ffffff;
+  --card-foreground: #171412;
+  --popover: #ffffff;
+  --popover-foreground: #171412;
+  --primary: #171412;
+  --primary-foreground: #ffffff;
+  --secondary: #f5f5f4;
+  --secondary-foreground: #171412;
+  --muted: #f5f5f4;
+  --muted-foreground: #57534e;
+  --subtle: #8a837c;
+  --accent: #f5f5f4;
+  --accent-foreground: #171412;
+  --destructive: #b42318;
+  --border: rgb(23 20 18 / 0.09);
+  --input: rgb(23 20 18 / 0.14);
+  --ring: rgb(180 68 28 / 0.35);
+  --stage: #efeeec;
+
+  /* Rust. Deeper than Browserbase's orange-red; 5.6:1 on white, so it carries text too. */
+  --brand: #b4441c;
+  --brand-hover: #9a3916;
+  --brand-ink: #b4441c;
+  --brand-tint: #fbeee8;
+  --brand-foreground: #ffffff;
+
+  /* Diagram strokes: structure, secondary, focal. */
+  --ink-200: #e7e5e4;
+  --ink-400: #a8a29e;
+  --ink-800: #292524;
+
+  --success: #2f7d4f;
+  --warning: #b7791f;
+  --rule: rgb(23 20 18 / 0.09);
+  --rule-strong: rgb(23 20 18 / 0.15);
+
+  --shadow-sm: 0 0 0 0.5px rgb(23 20 18 / 0.14), 0 1px 2px rgb(23 20 18 / 0.06);
+  --shadow-panel:
+    0 0 0 1px var(--rule), 0 1px 1px rgb(0 0 0 / 0.03),
+    0 2px 3px rgb(0 0 0 / 0.03), 0 4px 6px rgb(34 30 26 / 0.03),
+    0 24px 68px rgb(47 40 34 / 0.05);
+  --shadow-float:
+    0 0 0 1px var(--rule), 0 30px 45px -30px rgb(60 40 30 / 0.22),
+    0 18px 36px -18px rgb(0 0 0 / 0.08);
+
+  --sidebar: #fafaf9;
+  --sidebar-foreground: #171412;
+  --sidebar-accent: #f5f5f4;
+  --sidebar-accent-foreground: #171412;
+  --sidebar-border: rgb(23 20 18 / 0.09);
+  --sidebar-ring: rgb(180 68 28 / 0.35);
+  --sidebar-primary-foreground: #ffffff;
+}
+
+.dark {
+  --background: #0f0e0d;
+  --foreground: #f4f1ee;
+  --card: #171513;
+  --card-foreground: #f4f1ee;
+  --popover: #1b1917;
+  --popover-foreground: #f4f1ee;
+  --primary: #f4f1ee;
+  --primary-foreground: #171412;
+  --secondary: #1f1c1a;
+  --secondary-foreground: #f4f1ee;
+  --muted: #1f1c1a;
+  --muted-foreground: #a8a29e;
+  --subtle: #78716c;
+  --accent: #221f1c;
+  --accent-foreground: #f4f1ee;
+  --destructive: #f0645a;
+  --border: rgb(255 248 240 / 0.09);
+  --input: rgb(255 248 240 / 0.14);
+  --ring: rgb(232 112 66 / 0.45);
+  --stage: #141210;
+
+  --brand: #e2683a;
+  --brand-hover: #ec7c50;
+  --brand-ink: #ee8257;
+  --brand-tint: rgb(226 104 58 / 0.14);
+  --brand-foreground: #171412;
+
+  --ink-200: #2c2825;
+  --ink-400: #6b645e;
+  --ink-800: #e7e2dd;
+
+  --success: #5cc488;
+  --warning: #e0a843;
+  --rule: rgb(255 248 240 / 0.09);
+  --rule-strong: rgb(255 248 240 / 0.16);
+
+  --shadow-sm: 0 0 0 0.5px rgb(255 248 240 / 0.14), 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-panel: 0 0 0 1px var(--rule), 0 24px 68px rgb(0 0 0 / 0.35);
+  --shadow-float:
+    0 0 0 1px var(--rule-strong), 0 30px 60px -30px rgb(0 0 0 / 0.7);
+
+  --sidebar: #0f0e0d;
+  --sidebar-foreground: #f4f1ee;
+  --sidebar-accent: #1f1c1a;
+  --sidebar-accent-foreground: #f4f1ee;
+  --sidebar-border: rgb(255 248 240 / 0.09);
+  --sidebar-ring: rgb(232 112 66 / 0.45);
+  --sidebar-primary-foreground: #171412;
 }
 
 @theme inline {
+  --font-sans:
+    "Schibsted Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:
+    "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: "Host Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-stage: var(--stage);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-tint: var(--brand-tint);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-ink-200: var(--ink-200);
+  --color-ink-400: var(--ink-400);
+  --color-ink-800: var(--ink-800);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  /* One scale; a nested radius is the outer one minus the padding between them. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --shadow-sm: var(--shadow-sm);
+  --shadow-panel: var(--shadow-panel);
+  --shadow-float: var(--shadow-float);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out-cubic: cubic-bezier(0.65, 0, 0.35, 1);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    scrollbar-gutter: stable;
+  }
+  html > body[data-scroll-locked] {
+    margin-right: 0px !important;
+    --removed-body-scroll-bar-size: 0px !important;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+    letter-spacing: -0.005em;
+  }
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--brand) 22%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  /* Small mono, for column heads and file names. Mono is the data voice, never body text. */
+  .label-mono {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 16px;
+  }
+  .display-1 {
+    font-size: clamp(2.5rem, 1.6rem + 3.4vw, 4rem);
+    line-height: 1.02;
+    letter-spacing: -0.035em;
+    font-weight: 500;
+    text-wrap: balance;
+  }
+  .display-2 {
+    font-size: clamp(1.875rem, 1.3rem + 1.7vw, 2.75rem);
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+    font-weight: 500;
+    text-wrap: balance;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Buttons: the label rolls up and its copy rolls in from below. No overshoot. */
+  .btn-roll-a,
+  .btn-roll-b {
+    transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .btn-roll-b {
+    transform: translateY(165%);
+  }
+  .group\/btn:hover .btn-roll-a {
+    transform: translateY(-165%);
+  }
+  .group\/btn:hover .btn-roll-b {
+    transform: translateY(0);
+  }
+  /* The primary button catches one sweep of light on hover. */
+  .btn-sheen::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(
+      105deg,
+      transparent 30%,
+      rgb(255 255 255 / 0.22) 48%,
+      transparent 66%
+    );
+    transform: translateX(-110%);
+  }
+  .btn-sheen:hover::after {
+    transform: translateX(110%);
+    transition: transform 750ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Text links: on hover the grey underline slides out to the right while a rust one draws in
+     from the left. */
+  .link-draw {
+    background-image:
+      linear-gradient(var(--brand), var(--brand)),
+      linear-gradient(var(--rule-strong), var(--rule-strong));
+    background-size:
+      0% 1.5px,
+      100% 1px;
+    background-position:
+      0 100%,
+      100% 100%;
+    background-repeat: no-repeat;
+    padding-bottom: 3px;
+    transition:
+      background-size 500ms cubic-bezier(0.22, 1, 0.36, 1),
+      color 200ms ease;
+  }
+  .group:hover .link-draw {
+    color: var(--brand-ink);
+    background-size:
+      100% 1.5px,
+      0% 1px;
+  }
+  .link-draw-quiet {
+    background-size:
+      0% 1.5px,
+      0% 1px;
+  }
+  .group:hover .link-draw-quiet {
+    background-size:
+      100% 1.5px,
+      0% 1px;
+  }
+  .group:hover .link-draw + span {
+    color: var(--brand-ink);
+  }
+
+  /* The hero headline's words come into focus one after another, once. */
+  .word-in {
+    display: inline-block;
+    animation: word-in 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: calc(var(--i) * 55ms + 80ms);
+  }
+  @keyframes word-in {
+    from {
+      opacity: 0;
+      filter: blur(8px);
+      transform: translateY(0.18em);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .btn-roll-a,
+    .btn-roll-b,
+    .btn-sheen::after,
+    .link-draw {
+      transition: none;
+    }
+    .group\/btn:hover .btn-roll-a,
+    .btn-roll-b {
+      transform: none;
+    }
+    .btn-roll-b {
+      visibility: hidden;
+    }
+    .word-in {
+      animation: none;
+    }
+  }
+  /* A visual that fades into its cell at the bottom edge. */
+  .fade-b {
+    mask-image: linear-gradient(to bottom, #000 72%, transparent);
+  }
+  .fade-t {
+    mask-image: linear-gradient(to top, #000 72%, transparent);
+  }
+}
+
+/* Code colours (lib/highlight.ts). Mostly ink; strings carry the rust, comments recede. */
+:root {
+  --code-foreground: #171412;
+  --code-background: transparent;
+  --code-token-constant: #171412;
+  --code-token-string: #b4441c;
+  --code-token-comment: #8a837c;
+  --code-token-keyword: #6d5f55;
+  --code-token-parameter: #171412;
+  --code-token-function: #171412;
+  --code-token-string-expression: #b4441c;
+  --code-token-punctuation: #8a837c;
+  --code-token-link: #b4441c;
+}
+.dark {
+  --code-foreground: #e7e2dd;
+  --code-token-constant: #e7e2dd;
+  --code-token-string: #ee8257;
+  --code-token-comment: #78716c;
+  --code-token-keyword: #a8a29e;
+  --code-token-parameter: #e7e2dd;
+  --code-token-function: #f4f1ee;
+  --code-token-string-expression: #ee8257;
+  --code-token-punctuation: #78716c;
+  --code-token-link: #ee8257;
+}
+.code-block pre {
+  background: transparent !important;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.75;
+  overflow-x: auto;
+}
+@media (min-width: 640px) {
+  .code-block pre {
+    font-size: 13px;
+  }
+}
+.code-block code {
+  counter-reset: line;
+}
+.code-block .line {
+  display: inline-block;
+  min-width: 100%;
+  padding-right: 1rem;
+}
+.code-block[data-numbers] .line::before {
+  counter-increment: line;
+  content: counter(line);
+  display: inline-block;
+  width: 2.25rem;
+  padding-right: 1rem;
+  text-align: right;
+  color: var(--subtle);
+  opacity: 0.7;
+}
+
+/* Fumadocs code blocks: on the card colour, in the site's code theme. */
+figure.shiki {
+  background: var(--card);
+}
+figure.shiki pre {
+  font-family: var(--font-mono);
 }

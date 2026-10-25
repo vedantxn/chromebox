@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { Suspense } from 'react';
 import { getStats, health } from '@/lib/stats';
 
-export const metadata = { title: 'Baton · Status' };
+export const metadata = { title: 'Status' };
 
 const ms = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`);
 const mib = (v: number) => `${(v / 1024).toFixed(1)} GiB`;

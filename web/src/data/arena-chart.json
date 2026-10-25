@@ -1,0 +1,252 @@
+{
+  "harness": "Browser Arena",
+  "providers": [
+    {
+      "id": "anchorbrowser",
+      "label": "Anchor",
+      "note": "hosted",
+      "date": "2026-10-22",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 1739,
+        "connect": 139,
+        "goto": 119,
+        "release": 542
+      },
+      "total": {
+        "p50": 2552,
+        "p95": 3164,
+        "p99": 3937
+      }
+    },
+    {
+      "id": "aws-agentcore",
+      "label": "AWS AgentCore",
+      "note": "hosted",
+      "date": "2026-10-22",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 1514,
+        "connect": 208,
+        "goto": 772,
+        "release": 110
+      },
+      "total": {
+        "p50": 2613,
+        "p95": 3627,
+        "p99": 4411
+      }
+    },
+    {
+      "id": "browser-use",
+      "label": "Browser Use",
+      "note": "hosted",
+      "date": "2026-10-22",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 193,
+        "connect": 111,
+        "goto": 72,
+        "release": 41
+      },
+      "total": {
+        "p50": 424,
+        "p95": 490,
+        "p99": 639
+      }
+    },
+    {
+      "id": "browserbase",
+      "label": "Browserbase",
+      "note": "hosted",
+      "date": "2026-10-22",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 139,
+        "connect": 222,
+        "goto": 121,
+        "release": 112
+      },
+      "total": {
+        "p50": 590,
+        "p95": 663,
+        "p99": 730
+      }
+    },
+    {
+      "id": "cloudflare",
+      "label": "Cloudflare",
+      "note": "hosted",
+      "date": "2026-10-22",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 229,
+        "connect": 343,
+        "goto": 207,
+        "release": 105
+      },
+      "total": {
+        "p50": 962,
+        "p95": 1546,
+        "p99": 1919
+      }
+    },
+    {
+      "id": "hyperbrowser",
+      "label": "Hyperbrowser",
+      "note": "hosted",
+      "date": "2026-10-22",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 211,
+        "connect": 156,
+        "goto": 207,
+        "release": 309
+      },
+      "total": {
+        "p50": 890,
+        "p95": 975,
+        "p99": 1280
+      }
+    },
+    {
+      "id": "kernel",
+      "label": "Kernel",
+      "note": "hosted",
+      "date": "2026-10-22",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 21,
+        "connect": 70,
+        "goto": 232,
+        "release": 39
+      },
+      "total": {
+        "p50": 378,
+        "p95": 712,
+        "p99": 741
+      }
+    },
+    {
+      "id": "kernel-headful",
+      "label": "Kernel (headful)",
+      "note": "hosted",
+      "date": "2026-10-22",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 27,
+        "connect": 69,
+        "goto": 184,
+        "release": 38
+      },
+      "total": {
+        "p50": 344,
+        "p95": 676,
+        "p99": 767
+      }
+    },
+    {
+      "id": "lightpanda",
+      "label": "Lightpanda",
+      "note": "hosted",
+      "date": "2026-10-24",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 0,
+        "connect": 293,
+        "goto": 170,
+        "release": 21
+      },
+      "total": {
+        "p50": 485,
+        "p95": 559,
+        "p99": 674
+      }
+    },
+    {
+      "id": "notte",
+      "label": "Notte",
+      "note": "hosted",
+      "date": "2026-10-24",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 124,
+        "connect": 24,
+        "goto": 112,
+        "release": 28
+      },
+      "total": {
+        "p50": 291,
+        "p95": 340,
+        "p99": 430
+      }
+    },
+    {
+      "id": "steel",
+      "label": "Steel",
+      "note": "hosted",
+      "date": "2026-10-22",
+      "n": 100,
+      "successful": 96,
+      "phases": {
+        "create": 393,
+        "connect": 598,
+        "goto": 119,
+        "release": 156
+      },
+      "total": {
+        "p50": 1293,
+        "p95": 1691,
+        "p99": 2577
+      }
+    },
+    {
+      "id": "tilion",
+      "label": "Tilion",
+      "note": "hosted",
+      "date": "2026-10-22",
+      "n": 100,
+      "successful": 99,
+      "phases": {
+        "create": 18,
+        "connect": 77,
+        "goto": 46,
+        "release": 15
+      },
+      "total": {
+        "p50": 156,
+        "p95": 922,
+        "p99": 13292
+      }
+    },
+    {
+      "id": "baton",
+      "label": "Baton",
+      "note": "hosted, us-east-1",
+      "date": "2026-10-24",
+      "n": 100,
+      "successful": 100,
+      "phases": {
+        "create": 58,
+        "connect": 99,
+        "goto": 270,
+        "release": 43
+      },
+      "total": {
+        "p50": 475,
+        "p95": 564,
+        "p99": 630
+      }
+    }
+  ]
+}

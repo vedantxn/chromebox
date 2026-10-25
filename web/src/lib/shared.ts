@@ -1,0 +1,20 @@
+/** The Baton repo, which the site describes. */
+export const batonRepo = {
+  user: "vedantxn",
+  repo: "chromebox",
+  url: "https://github.com/vedantxn/chromebox",
+  license: "MIT",
+};
+
+/** The SDK on npm. */
+export const sdk = { name: "batonvm", version: "0.3.0", url: "https://www.npmjs.com/package/batonvm" };
+
+/** A file in the Baton repo, on main. */
+export function repoFile(path: string) {
+  return `${batonRepo.url}/blob/main/${path}`;
+}
+
+/** A folder in the Baton repo, on main. */
+export function repoTree(path: string) {
+  return `${batonRepo.url}/tree/main/${path}`;
+}

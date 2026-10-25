@@ -232,4 +232,4 @@ export default function Benchmarks() {
   );
 }
 
-export const metadata = { title: 'Baton · Benchmarks' };
+export const metadata = { title: 'Benchmarks' };
