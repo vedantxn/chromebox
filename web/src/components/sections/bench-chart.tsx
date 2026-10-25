@@ -8,7 +8,6 @@ import { cn } from "@/lib/cn";
 export type BenchRow = {
   id: string;
   label: string;
-  note: string;
   /** A file in /public/logos, or null for Baton's own mark (or `initial`, when set). */
   logo: string | null;
   initial?: string;
@@ -150,9 +149,6 @@ export function BenchChart({
                     )}
                   >
                     {r.label}
-                  </p>
-                  <p className="mt-0.5 text-[12px] leading-tight text-subtle">
-                    {r.note}
                   </p>
                 </div>
               </div>

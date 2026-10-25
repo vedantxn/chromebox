@@ -4,7 +4,7 @@ import arena from "@/data/arena.json";
 import { ArenaChart } from "@/components/sections/benchmarks";
 import { MoreLink, Section } from "@/components/site/frame";
 import { DataTable, Note, PageHead, Panel, PanelHead, Stat, StatRow, type Cell } from "@/components/site/page";
-import { ours, rank } from "@/content/landing";
+import { ours } from "@/content/landing";
 import { repoFile, repoTree } from "@/lib/shared";
 
 // The numbers come from JSON files written by the benchmark scripts on a client in us-east-1
@@ -58,7 +58,6 @@ export default function Benchmarks() {
   const bbRows = [
     {
       provider: "Baton",
-      note: "our run",
       total_median: bb.measured.stages.total.p50,
       total_p95: bb.measured.stages.total.p95,
       create: bb.measured.stages.create.avg,
@@ -67,7 +66,7 @@ export default function Benchmarks() {
       release: bb.measured.stages.release.avg,
       mine: true,
     },
-    ...bb.published.rows.map((r) => ({ ...r, note: "published", mine: false })),
+    ...bb.published.rows.map((r) => ({ ...r, mine: false })),
   ].sort((a, b) => a.total_median - b.total_median);
 
   return (
@@ -91,7 +90,7 @@ export default function Benchmarks() {
 
       <div className="mx-auto mt-12 w-full max-w-[1264px] px-5 sm:mt-16 sm:px-8">
         <StatRow cols={4}>
-          <Stat value={ms(ours.total.p50)} label="a whole session on Browser Arena" note={`p95 ${ms(ours.total.p95)}, ${rank.place} of ${rank.of} by p95`} tone="brand" />
+          <Stat value={ms(ours.total.p50)} label="a whole session on Browser Arena" note={`p95 ${ms(ours.total.p95)}`} tone="brand" />
           <Stat value={ms(fresh.p50)} label="new browser, request → answering CDP" note={`p95 ${ms(fresh.p95)}`} />
           <Stat value={ms(mig.paused.p50)} label="paused while it moves machines" note={`a live client’s longest wait: ${ms(mig.client_longest_wait.p50)}`} />
           <Stat value={ms(f1.parent_paused.p50)} label="paused to fork a running browser" note={`3 copies ready in ${s(f3.all_copies_ready.p50)}`} />
@@ -175,9 +174,7 @@ export default function Benchmarks() {
             strong={bbRows.findIndex((r) => r.mine) === -1 ? [] : [bbRows.findIndex((r) => r.mine)]}
             minWidth={760}
             rows={bbRows.map((r) => [
-              <span key="p">
-                {r.provider} <span className="font-normal text-subtle">· {r.note}</span>
-              </span>,
+              r.provider,
               ms(r.total_median),
               ms(r.total_p95),
               ms(r.create),
