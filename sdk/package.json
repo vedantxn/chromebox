@@ -1,9 +1,11 @@
 {
   "name": "batonvm",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Cloud browsers for agents that keep running while they move between machines",
   "license": "MIT",
   "homepage": "https://batonvm.vercel.app",
+  "repository": { "type": "git", "url": "git+https://github.com/vedantxn/chromebox.git", "directory": "sdk" },
+  "bugs": { "url": "https://github.com/vedantxn/chromebox/issues" },
   "keywords": ["browser", "playwright", "puppeteer", "cdp", "agents", "firecracker"],
   "type": "module",
   "main": "./dist/cjs/index.js",
