@@ -40,14 +40,17 @@ sudo modprobe ip_gre
 sudo dnf install -y -q iptables-nft >/dev/null
 printf 'net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.rp_filter = 0\nnet.ipv4.conf.default.rp_filter = 0\n' | sudo tee /etc/sysctl.d/90-chromebox.conf >/dev/null
 sudo sysctl -q -p /etc/sysctl.d/90-chromebox.conf
+sudo mkdir -p /etc/chromebox
+# chromebox-gateway.service (gateway-setup.sh) rebuilds the tunnels from this file at boot.
+sudo tee /etc/chromebox/tunnels >/dev/null <<'T'
+$tunnels
+T
 while read -r name ip; do
   [ -n "\$name" ] || continue
   ip link show "gre-\$name" >/dev/null 2>&1 || sudo ip tunnel add "gre-\$name" mode gre local "\$GW_IP" remote "\$ip" ttl 255
   sudo ip link set "gre-\$name" up
   echo "tunnel gre-\$name -> \$ip"
-done <<'T'
-$tunnels
-T
+done < /etc/chromebox/tunnels
 wan=\$(ip -o route show default | awk '{print \$5}' | head -1)
 sudo iptables -t nat -C POSTROUTING -s 10.200.0.0/16 -o "\$wan" -j MASQUERADE 2>/dev/null \\
   || sudo iptables -t nat -A POSTROUTING -s 10.200.0.0/16 -o "\$wan" -j MASQUERADE
