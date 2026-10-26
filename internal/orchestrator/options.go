@@ -204,17 +204,31 @@ func (o *Orchestrator) startWith(ctx context.Context, vm api.VM, s SessionOption
 }
 
 // egressTable is the nftables state behind the customer proxies: a proxied
-// VM's new TCP connections go to the CDP proxy's egress listener, and its UDP
-// other than DNS goes nowhere (QUIC and WebRTC would bypass the proxy).
-var egressTable = fmt.Sprintf(`add table ip baton-egress
+// VM's new TCP connections go to the CDP proxy's egress listener at the
+// gateway's address self, and its UDP other than DNS goes nowhere (QUIC and
+// WebRTC would bypass the proxy). Not a redirect: VM traffic arrives on GRE
+// tunnels, which have no address of their own to redirect to.
+func egressTable(self netip.Addr) string {
+	return fmt.Sprintf(`add table ip baton-egress
 add set ip baton-egress proxied { type ipv4_addr; }
 add chain ip baton-egress prerouting { type nat hook prerouting priority dstnat; policy accept; }
 add chain ip baton-egress forward { type filter hook forward priority filter; policy accept; }
 flush chain ip baton-egress prerouting
 flush chain ip baton-egress forward
-add rule ip baton-egress prerouting ip saddr @proxied meta l4proto tcp redirect to :%d
+add rule ip baton-egress prerouting ip saddr @proxied meta l4proto tcp dnat to %s
 add rule ip baton-egress forward ip saddr @proxied meta l4proto udp udp dport != 53 drop
-`, gateway.EgressPort)
+`, netip.AddrPortFrom(self, gateway.EgressPort))
+}
+
+// ownAddr is this machine's address on the way out (no packet is sent).
+func ownAddr() (netip.Addr, error) {
+	c, err := net.Dial("udp4", "1.1.1.1:53")
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	defer c.Close()
+	return c.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap(), nil
+}
 
 // ensureEgress creates the egress table (idempotent) and puts back the
 // addresses of every live proxied session: nftables state does not survive a
@@ -223,8 +237,13 @@ func (o *Orchestrator) ensureEgress() {
 	if o.cfg.ProxyAdmin == "" {
 		return
 	}
+	self, err := ownAddr()
+	if err != nil {
+		log.Printf("egress table: %v", err)
+		return
+	}
 	cmd := exec.Command("nft", "-f", "-")
-	cmd.Stdin = strings.NewReader(egressTable)
+	cmd.Stdin = strings.NewReader(egressTable(self))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		log.Printf("egress table: %v: %s", err, bytes.TrimSpace(out))
 		return

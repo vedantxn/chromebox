@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func TestTimeoutSetsTheLifetime(t *testing.T) {
 	if (SessionOptions{TimeoutMinutes: 45}).ttl() != 45*time.Minute {
 		t.Fatal("timeout_minutes ignored")
 	}
-	if !strings.Contains(egressTable, "redirect to :3129") || !strings.Contains(egressTable, "udp dport != 53 drop") {
+	if rules := egressTable(netip.MustParseAddr("172.31.7.29")); !strings.Contains(rules, "dnat to 172.31.7.29:3129") || !strings.Contains(rules, "udp dport != 53 drop") {
 		t.Fatal("egress rules lost the redirect or the UDP drop")
 	}
 }

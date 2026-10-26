@@ -21,7 +21,7 @@ import (
 // Chrome's proxy is a launch setting, and the browser is already running, so
 // this happens in the network instead: the gateway (which every VM's traffic
 // crosses anyway) redirects new TCP connections from a proxied VM to this
-// listener (an nftables redirect the control plane manages, egress set
+// listener (an nftables DNAT the control plane manages, egress set
 // "proxied"). Here each connection's original destination is read back, the
 // host name taken from the TLS ClientHello (SNI) or the HTTP Host header, and
 // the connection is tunnelled through the customer's proxy with CONNECT. The
