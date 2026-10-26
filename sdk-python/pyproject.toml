@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "batonvm"
+dynamic = ["version"]
+description = "Cloud browsers for agents that keep running while they move between machines"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = ["httpx>=0.24"]
+keywords = ["browser", "playwright", "cdp", "agents", "firecracker", "browser-use"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Framework :: AsyncIO",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://batonvm.vercel.app"
+Documentation = "https://batonvm.vercel.app/docs"
+Repository = "https://github.com/vedantxn/chromebox"
+Issues = "https://github.com/vedantxn/chromebox/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.21"]
+
+[tool.hatch.version]
+path = "src/batonvm/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/batonvm"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "examples", "README.md", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

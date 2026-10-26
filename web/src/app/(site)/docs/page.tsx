@@ -4,7 +4,7 @@ import { MoreLink, Section, Frame } from "@/components/site/frame";
 import { GetKey } from "@/components/site/get-key";
 import { CodeBlock } from "@/components/site/code-block";
 import { DataTable, Note, Panel, PageHead, Stat, StatRow } from "@/components/site/page";
-import { sdk } from "@/lib/shared";
+import { pysdk, sdk } from "@/lib/shared";
 
 export const metadata = { title: "Quickstart" };
 
@@ -47,6 +47,36 @@ const curl = `curl -X POST https://batonvm.vercel.app/api/v1/sessions \\
   -H "Authorization: Bearer $BATON_API_KEY"
 # → { "id": "vm-...", "status": "running", "connectUrl": "wss://.../cdp/...", "expiresAt": "..." }`;
 
+const pyInstall = `pip install batonvm playwright
+export BATON_API_KEY=bk_...`;
+
+// sdk-python/examples/: the same calls, in Python's naming (run against production before it was published).
+const pyQuickstart = `from batonvm import Baton
+from playwright.sync_api import sync_playwright
+
+baton = Baton()  # reads BATON_API_KEY
+
+with baton.sessions.create() as session, sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp(session.connect_url)
+    page = browser.contexts[0].pages[0]
+    page.goto("https://example.com")
+    print(page.title())
+
+    move = session.migrate()  # the browser changes machines mid-script
+    print(f"moved {move.from_node} → {move.to_node}, paused {move.paused_ms} ms")
+    print(page.title())  # same page, same connection
+
+    copy = session.fork(1).sessions[0]  # a copy: same pages, cookies, storage
+    copy.close()
+
+    session.pause()   # stored; no machine holds it; kept up to 7 days
+    session.resume()  # back on any machine; session.connect_url is fresh
+
+    session.save_profile("shop")                     # log in once...
+    later = baton.sessions.create(profile="shop")    # ...start already logged in
+    later.close()
+# the session ends with the with-block`;
+
 const routes: [string, string][] = [
   ["POST /api/v1/sessions {profile?}", "Start a browser (from a saved profile: already logged in); returns connectUrl"],
   ["GET /api/v1/sessions[/:id]", "Your sessions"],
@@ -78,6 +108,15 @@ const steps = [
     title: "Run a browser",
     body: <>Create a session, connect over CDP, then move it, copy it, put it to sleep and start one already logged in.</>,
   },
+  {
+    title: "Or from Python",
+    body: (
+      <>
+        The same calls in Python&apos;s naming, with Playwright for Python. <code>AsyncBaton</code> is the asyncio version,
+        for browser-use and Playwright&apos;s async API.
+      </>
+    ),
+  },
 ];
 
 export default function Docs() {
@@ -95,6 +134,7 @@ export default function Docs() {
         <div className="flex flex-wrap items-center gap-3">
           <GetKey />
           <MoreLink href={sdk.url}>{sdk.name} on npm</MoreLink>
+          <MoreLink href={pysdk.url}>{pysdk.name} on PyPI</MoreLink>
         </div>
       </PageHead>
 
@@ -121,8 +161,13 @@ export default function Docs() {
                   </Panel>
                 ) : i === 1 ? (
                   <CodeBlock code={install} lang="bash" file="terminal" numbers={false} />
-                ) : (
+                ) : i === 2 ? (
                   <CodeBlock code={quickstart} lang="ts" file="first-session.ts" />
+                ) : (
+                  <div className="space-y-4">
+                    <CodeBlock code={pyInstall} lang="bash" file="terminal" numbers={false} />
+                    <CodeBlock code={pyQuickstart} lang="python" file="first_session.py" />
+                  </div>
                 )}
               </div>
             </li>

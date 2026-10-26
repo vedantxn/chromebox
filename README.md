@@ -3,7 +3,7 @@
 Cloud browsers for AI agents. Every session is a real Chrome in its own Firecracker microVM, restored from a snapshot in about 190 ms. A running browser can **move to another machine mid-session** without the agent's connection dropping, be **forked** into copies that start from the same logged-in state, **paused** to storage (and cost nothing) and resumed on any machine, and **saved as a profile** so later sessions start already logged in. Machines are **started and stopped automatically** by load.
 
 - Live: **https://batonvm.vercel.app** (sign in with GitHub, get an API key)
-- SDK: `npm install batonvm` ([sdk/](sdk/))
+- SDKs: `npm install batonvm` ([sdk/](sdk/)) · `pip install batonvm` ([sdk-python/](sdk-python/), sync and async)
 - Numbers, with raw samples: **https://batonvm.vercel.app/benchmarks** · live status: **https://batonvm.vercel.app/status**
 
 ```js

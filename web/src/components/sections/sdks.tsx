@@ -1,11 +1,11 @@
 import { facts } from "@/content/landing";
 import { MoreLink, Section } from "@/components/site/frame";
 import { highlight } from "@/lib/highlight";
-import { repoTree, sdk } from "@/lib/shared";
+import { pysdk, repoTree, sdk } from "@/lib/shared";
 import { FreeTierCard } from "./get-started";
 import { SdkTabs, type SdkTab } from "./sdk-tabs";
 
-// Snippets from sdk/README.md; outputs are what they print, with the move's numbers from our runs.
+// Snippets from sdk/README.md and sdk-python/README.md; outputs are what they print, with the move's numbers from our runs.
 const TABS: Omit<SdkTab, "html">[] = [
   {
     id: "ts",
@@ -26,6 +26,26 @@ console.log(\`\${move.from} → \${move.to}, paused \${move.pausedMs} ms\`);
 console.log(await page.title()); // same page, same connection
 await session.close();`,
     output: `node-a → node-b, paused ${facts.movePaused} ms\nExample Domain`,
+  },
+  {
+    id: "py",
+    label: "Python",
+    file: "first_session.py",
+    install: "pip install batonvm playwright",
+    code: `from batonvm import Baton
+from playwright.sync_api import sync_playwright
+
+baton = Baton()  # reads BATON_API_KEY
+
+with baton.sessions.create() as session, sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp(session.connect_url)
+    page = browser.contexts[0].pages[0]
+    page.goto("https://example.com")
+
+    move = session.migrate()  # another machine, mid-script
+    print(f"moved {move.from_node} → {move.to_node}, paused {move.paused_ms} ms")
+    print(page.title())  # same page, same connection`,
+    output: `moved node-a → node-b, paused ${facts.movePaused} ms\nExample Domain`,
   },
   {
     id: "pptr",
@@ -69,18 +89,19 @@ export async function Sdks() {
   const tabs: SdkTab[] = await Promise.all(
     TABS.map(async (t) => ({
       ...t,
-      html: await highlight(t.code, t.id === "rest" ? "bash" : "ts"),
+      html: await highlight(t.code, t.id === "rest" ? "bash" : t.id === "py" ? "python" : "ts"),
     })),
   );
   return (
     <Section
       id="sdks"
       title="Your code doesn’t change."
-      lede="Only the browser does. Create a session, connect the Playwright or Puppeteer you already use, and call migrate, fork or pause on the same object."
+      lede="Only the browser does. Create a session from TypeScript or Python, connect the Playwright or Puppeteer you already use, and call migrate, fork or pause on the same object."
       action={
         <div className="flex flex-wrap gap-x-6 gap-y-2">
           <MoreLink href="/docs">Quickstart</MoreLink>
           <MoreLink href={sdk.url}>batonvm on npm</MoreLink>
+          <MoreLink href={pysdk.url}>batonvm on PyPI</MoreLink>
           <MoreLink href={repoTree("sdk")}>SDK source</MoreLink>
         </div>
       }
