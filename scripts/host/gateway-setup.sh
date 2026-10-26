@@ -30,6 +30,7 @@ table inet baton {
   }
   chain input { type filter hook input priority 0; policy accept;
     ip saddr 10.200.0.0/16 ct state established,related accept
+    ip saddr 10.200.0.0/16 tcp dport 3129 ct status dnat accept   # a proxied VM's traffic, redirected to the egress listener
     ip saddr 10.200.0.0/16 counter drop
   }
 }

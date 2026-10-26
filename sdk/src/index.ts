@@ -16,6 +16,22 @@ export interface BatonOptions {
   baseUrl?: string;
 }
 
+/** How a session's browser presents itself, how long it may run, and where its traffic goes. */
+export interface SessionOptions {
+  /** The page size, in CSS pixels (320-3840 by 240-2160). */
+  viewport?: { width: number; height: number };
+  /** Sent in requests and reported by navigator.userAgent. */
+  userAgent?: string;
+  /** A language tag like 'fr-FR': Accept-Language, navigator.language and Intl. */
+  locale?: string;
+  /** An IANA name like 'Europe/Paris': Date and Intl in every page. */
+  timezone?: string;
+  /** How long the session may run before it is ended, up to 60 (default 15). */
+  timeoutMinutes?: number;
+  /** An HTTP proxy (with CONNECT) of your own: every page's traffic leaves through it. */
+  proxy?: { server: string; username?: string; password?: string };
+}
+
 export interface SessionData {
   id: string;
   status: 'creating' | 'running' | 'migrating' | 'ended' | string;
@@ -27,6 +43,8 @@ export interface SessionData {
   migrations: number;
   /** wss URL for chromium.connectOverCDP / puppeteer.connect. Only on create. */
   connectUrl?: string;
+  /** The options the session was created with (a proxy's password is not shown). */
+  options?: SessionOptions;
 }
 
 export interface Migration {
@@ -73,6 +91,8 @@ export interface Usage {
   minutes_today: number;
   max_minutes_per_day: number;
   session_lifetime_minutes: number;
+  /** The longest timeoutMinutes a session may ask for. */
+  max_session_minutes: number;
 }
 
 /** An API error, with the HTTP status (429: over a limit, 503: at capacity). */
@@ -93,6 +113,7 @@ export class Session implements SessionData {
   endReason?: string;
   migrations!: number;
   connectUrl?: string;
+  options?: SessionOptions;
 
   constructor(private readonly client: Baton, data: SessionData) {
     Object.assign(this, data);
@@ -167,9 +188,13 @@ export class Baton {
   }
 
   readonly sessions = {
-    /** Start a browser, optionally from a saved profile (logged in, on the pages it was saved on). */
-    create: async (opts: { profile?: string } = {}): Promise<Session> =>
-      new Session(this, await this.request<SessionData>('POST', '/api/v1/sessions', opts.profile ? { profile: opts.profile } : undefined, { waitForCapacity: true })),
+    /**
+     * Start a browser, optionally from a saved profile (logged in, on the pages
+     * it was saved on), with the viewport, user agent, locale, timezone,
+     * timeout and proxy you set. The browser has them before you connect.
+     */
+    create: async (opts: { profile?: string } & SessionOptions = {}): Promise<Session> =>
+      new Session(this, await this.request<SessionData>('POST', '/api/v1/sessions', Object.keys(opts).length ? opts : undefined, { waitForCapacity: true })),
     list: async (): Promise<Session[]> =>
       (await this.request<SessionData[]>('GET', '/api/v1/sessions')).map((s) => new Session(this, s)),
     get: async (id: string): Promise<Session> => new Session(this, await this.request<SessionData>('GET', `/api/v1/sessions/${id}`)),

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -50,6 +51,8 @@ func (s *Store) accountSchema() error {
 	// count against its owner's browser minutes.
 	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN paused_at TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN paused_s REAL NOT NULL DEFAULT 0`)
+	// Added with session options: what the session asked for (options.go), as JSON.
+	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN options TEXT NOT NULL DEFAULT ''`)
 	return s.passwordSchema()
 }
 
@@ -72,6 +75,8 @@ type Session struct {
 	EndReason  string `json:"end_reason,omitempty"`
 	Migrations int    `json:"migrations"`
 	ConnectURL string `json:"connect_url,omitempty"` // only when the session is created
+
+	Options *SessionOptions `json:"options,omitempty"` // what it asked for; the proxy password is masked
 }
 
 func (o *Orchestrator) accountRoutes(mux *http.ServeMux) {
@@ -258,14 +263,31 @@ func (o *Orchestrator) minutesToday(uid string) float64 {
 
 func (o *Orchestrator) createSession(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	var in struct{ Profile string }
-	_ = json.NewDecoder(r.Body).Decode(&in) // an empty body: a fresh browser
+	var in struct {
+		Profile string `json:"profile"`
+		SessionOptions
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil && err != io.EOF { // an empty body: a fresh browser
+		http.Error(w, "the body must be JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := in.SessionOptions.validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ttl := in.SessionOptions.ttl()
 	var vm api.VM
 	var err error
 	if in.Profile != "" {
-		vm, _, err = o.CreateFromProfile(r.Context(), uid, in.Profile)
+		vm, _, err = o.CreateFromProfile(r.Context(), uid, in.Profile, ttl)
 	} else {
-		vm, err = o.CreateFor(r.Context(), uid, "chrome-v1", sessionLifetime)
+		vm, err = o.CreateFor(r.Context(), uid, "chrome-v1", ttl)
+	}
+	if err == nil {
+		if err = o.startWith(r.Context(), vm, in.SessionOptions); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 	}
 	if err != nil {
 		code := http.StatusInternalServerError
@@ -283,7 +305,7 @@ func (o *Orchestrator) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := o.sessionView(vm.ID, uid)
-	s.ConnectURL = o.connectURL(vm, "cdp", sessionLifetime)
+	s.ConnectURL = o.connectURL(vm, "cdp", ttl)
 	writeJSON(w, http.StatusCreated, s)
 }
 
@@ -329,7 +351,8 @@ func (o *Orchestrator) forkSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusTooManyRequests)
 		return
 	}
-	res, err := o.Fork(r.Context(), r.PathValue("sid"), req.Count, sessionLifetime, o.reserveFor(uid))
+	parent := o.store.optionsOf(r.PathValue("sid")) // copies inherit it: same identity, same proxy
+	res, err := o.Fork(r.Context(), r.PathValue("sid"), req.Count, parent.ttl(), o.reserveFor(uid))
 	if err != nil {
 		code := http.StatusConflict
 		if strings.Contains(err.Error(), "limit:") {
@@ -341,8 +364,12 @@ func (o *Orchestrator) forkSession(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"parent": res.Parent, "paused_ms": res.PausedMs, "total_ms": res.TotalMs, "errors": res.Errors}
 	var sessions []Session
 	for _, vm := range res.Copies {
+		if err := o.startWith(r.Context(), vm, parent); err != nil {
+			res.Errors = append(res.Errors, vm.ID+": "+err.Error())
+			continue
+		}
 		s := o.sessionView(vm.ID, uid)
-		s.ConnectURL = o.connectURL(vm, "cdp", sessionLifetime)
+		s.ConnectURL = o.connectURL(vm, "cdp", parent.ttl())
 		sessions = append(sessions, s)
 	}
 	out["sessions"] = sessions
@@ -371,11 +398,13 @@ func (o *Orchestrator) sessionView(sid, uid string) Session {
 	s.EndedAt, s.EndReason = ended, reason
 	if ended != "" {
 		s.Status = "ended"
+		s.Options = o.store.optionsOf(sid).public()
 		return s
 	}
 	if vm, err := o.store.GetVM(sid); err == nil {
 		s.Status, s.Node, s.ExpiresAt = vm.State, vm.Node, vm.Expires
 	}
+	s.Options = o.store.optionsOf(sid).public()
 	return s
 }
 
@@ -463,6 +492,7 @@ func (o *Orchestrator) usage(w http.ResponseWriter, r *http.Request) {
 		"profiles": profiles, "max_profiles": maxProfiles,
 		"minutes_today": o.minutesToday(uid), "max_minutes_per_day": maxMinutesPerDay,
 		"session_lifetime_minutes": sessionLifetime.Minutes(),
+		"max_session_minutes":      maxSessionMinutes,
 	})
 }
 

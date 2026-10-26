@@ -81,7 +81,10 @@ func runOrchestrator(listen string) error {
 // Three listeners:
 //   - public (behind CloudFront): only /cdp/<signed token>
 //   - :9222, operator only (security group): /v/<n> without a token, for tests
-//   - 127.0.0.1:9301: admin; the orchestrator asks it to close a VM's connections
+//   - 127.0.0.1:9301: admin; the orchestrator asks it to close a VM's
+//     connections, and sets or drops a session's browser settings
+//   - :3129 (gateway.EgressPort): proxied VMs' connections, redirected here and
+//     sent on through the customer's proxy
 func runProxy(public string) error {
 	secret := os.Getenv("CHROMEBOX_SESSION_SECRET")
 	if len(secret) < 32 {
@@ -94,12 +97,34 @@ func runProxy(public string) error {
 		n, _ := strconv.Atoi(r.PathValue("n"))
 		json.NewEncoder(w).Encode(map[string]int{"Closed": p.CloseVM(n)})
 	})
-	errc := make(chan error, 3)
+	// PUT /settings/{n}?wait=<duration>: set VM n's browser settings, and with
+	// wait, answer once its open tabs have them.
+	admin.HandleFunc("PUT /settings/{n}", func(w http.ResponseWriter, r *http.Request) {
+		n, _ := strconv.Atoi(r.PathValue("n"))
+		var s gateway.Settings
+		if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		wait, _ := time.ParseDuration(r.URL.Query().Get("wait"))
+		if err := p.SetSettings(n, s, wait); err != nil {
+			http.Error(w, err.Error(), http.StatusGatewayTimeout)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	admin.HandleFunc("DELETE /settings/{n}", func(w http.ResponseWriter, r *http.Request) {
+		n, _ := strconv.Atoi(r.PathValue("n"))
+		p.DropSettings(n)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	errc := make(chan error, 4)
+	go func() { errc <- p.ServeEgress(fmt.Sprintf(":%d", gateway.EgressPort)) }()
 	for addr, h := range map[string]http.Handler{public: p.Public(), ":9222": p, "127.0.0.1:9301": admin} {
 		srv := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 		go func() { errc <- srv.ListenAndServe() }()
 	}
-	log.Printf("cdp proxy: public %s, operator :9222, admin 127.0.0.1:9301", public)
+	log.Printf("cdp proxy: public %s, operator :9222, admin 127.0.0.1:9301, egress :%d", public, gateway.EgressPort)
 	return <-errc
 }
 

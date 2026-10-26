@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/vedantxn/chromebox/internal/api"
 )
@@ -127,7 +128,7 @@ func (o *Orchestrator) SaveProfile(ctx context.Context, uid, id, name string) (S
 // that will run it must hold the profile's snapshot as a local base: one that
 // already does is used if it has room; otherwise a node is chosen and fetches
 // it first (once; later sessions from the profile on that node share its memory).
-func (o *Orchestrator) CreateFromProfile(ctx context.Context, uid, name string) (api.VM, map[string]any, error) {
+func (o *Orchestrator) CreateFromProfile(ctx context.Context, uid, name string, ttl time.Duration) (api.VM, map[string]any, error) {
 	prof, err := o.store.profile(uid, name)
 	if err != nil {
 		return api.VM{}, nil, fmt.Errorf("no profile %q", name)
@@ -160,7 +161,7 @@ func (o *Orchestrator) CreateFromProfile(ctx context.Context, uid, name string) 
 		}
 		detail["image_node"], detail["image_download_ms"], detail["fetched"] = node, resp.DownloadMs, resp.Fetched
 	}
-	vm, err := o.CreateFor(ctx, uid, image, sessionLifetime)
+	vm, err := o.CreateFor(ctx, uid, image, ttl)
 	if err != nil {
 		return api.VM{}, nil, err
 	}

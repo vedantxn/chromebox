@@ -15,6 +15,7 @@ func (o *Orchestrator) reconcileLoop(ctx context.Context) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	rerouted := false
+	lastPush := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -34,6 +35,10 @@ func (o *Orchestrator) reconcileLoop(ctx context.Context) {
 		o.expire(ctx)
 		o.expirePaused(ctx)
 		o.collectForks(ctx)
+		if time.Since(lastPush) >= 30*time.Second { // a restarted CDP proxy gets the settings back
+			lastPush = time.Now()
+			o.reapplyOptions(ctx)
+		}
 	}
 }
 
@@ -71,6 +76,7 @@ func (o *Orchestrator) markLost(ctx context.Context) {
 		_ = o.store.SetState(v.ID, StateLost)
 		o.metrics.errors.WithLabelValues("vm_lost_node").Inc()
 		o.store.endSessionRecord(v.ID, "node lost")
+		o.dropOptions(v)
 		o.delRoute(ctx, v.NetIndex)
 		n := o.closeConns(v.NetIndex)
 		log.Printf("node %s is down: %s lost, %d client connection(s) closed", v.Node, v.ID, n)
@@ -184,6 +190,7 @@ func (o *Orchestrator) vanished(st api.Status) {
 		_ = o.store.SetState(v.ID, StateLost)
 		o.metrics.errors.WithLabelValues("vm_vanished").Inc()
 		o.store.endSessionRecord(v.ID, "browser stopped")
+		o.dropOptions(v)
 		o.delRoute(context.Background(), v.NetIndex)
 		n := o.closeConns(v.NetIndex)
 		log.Printf("%s no longer runs on %s: lost, %d client connection(s) closed", v.ID, v.Node, n)

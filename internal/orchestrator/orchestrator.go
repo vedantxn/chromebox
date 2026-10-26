@@ -104,6 +104,7 @@ func New(cfg Config) (*Orchestrator, error) {
 // Run serves the API and the CDP proxy until ctx ends.
 func (o *Orchestrator) Run(ctx context.Context) error {
 	api := &http.Server{Addr: o.cfg.APIListen, Handler: o.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	o.ensureEgress()
 	go o.reconcileLoop(ctx)
 	if o.cfg.Warm.PerNode > 0 {
 		go o.warmLoop(ctx)
@@ -405,6 +406,7 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("unknown vm %q", id)
 	}
+	o.dropOptions(vm)
 	if !isWarm(vm.State) {
 		o.touch(vm.Node)
 	}

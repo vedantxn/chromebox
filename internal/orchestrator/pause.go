@@ -279,6 +279,10 @@ func (o *Orchestrator) resumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vm, _ := o.store.GetVM(sid)
+	// A resumed browser is a new process: its settings go back on before anyone connects.
+	if err := o.applyOptions(r.Context(), vm, o.store.optionsOf(sid), 5*time.Second); err != nil {
+		log.Printf("%s: resumed, but %v", sid, err)
+	}
 	s := o.sessionView(sid, uid)
 	s.ConnectURL = o.connectURL(vm, "cdp", time.Until(vm.ExpiresAt()))
 	writeJSON(w, http.StatusOK, map[string]any{"session": s, "resume": res})

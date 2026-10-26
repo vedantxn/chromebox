@@ -59,6 +59,8 @@ type Proxy struct {
 	conns map[int]map[*trackedConn]struct{}
 
 	secret []byte // signs session tokens; nil disables /cdp/<token>
+
+	settings map[int]*settingsManager // per VM, under mu (settings.go)
 }
 
 // SetSecret enables token-authenticated access at /cdp/<token>[/path].
