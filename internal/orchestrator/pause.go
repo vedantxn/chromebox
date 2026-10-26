@@ -62,8 +62,10 @@ func (o *Orchestrator) Pause(ctx context.Context, id string) (PauseResult, error
 	}
 	start := time.Now()
 	prefix := fmt.Sprintf("sessions/%s/%s/", id, randHex(4))
+	release := o.holdOptions(vm)
 	resp, err := ag.Pause(ctx, id, api.PauseRequest{Prefix: prefix})
 	if err != nil {
+		release()
 		_ = o.store.SetState(id, StateRunning)
 		o.metrics.pauses.WithLabelValues("failed").Inc()
 		o.metrics.errors.WithLabelValues("pause").Inc()
@@ -73,6 +75,7 @@ func (o *Orchestrator) Pause(ctx context.Context, id string) (PauseResult, error
 	// The browser is gone from its node. Remove its route and tell its clients.
 	o.delRoute(ctx, vm.NetIndex)
 	o.closeConns(vm.NetIndex)
+	o.dropOptions(vm) // its address may go to another VM meanwhile; resume applies them again
 	remaining := max(time.Until(vm.ExpiresAt()), 0)
 	if err := o.store.SetPaused(id, prefix, resp.DiskBase, remaining); err != nil {
 		log.Printf("pause %s: stored, but recording it failed: %v", id, err)
@@ -279,7 +282,7 @@ func (o *Orchestrator) resumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vm, _ := o.store.GetVM(sid)
-	// A resumed browser is a new process: its settings go back on before anyone connects.
+	// Its settings were dropped when it paused: they go back on before anyone connects.
 	if err := o.applyOptions(r.Context(), vm, o.store.optionsOf(sid), 5*time.Second); err != nil {
 		log.Printf("%s: resumed, but %v", sid, err)
 	}

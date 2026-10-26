@@ -118,6 +118,18 @@ func runProxy(public string) error {
 		p.DropSettings(n)
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// Around a snapshot of VM n: hold detaches the proxy's session from the
+	// browser (so no copy inherits it), release brings it back.
+	admin.HandleFunc("POST /settings/{n}/hold", func(w http.ResponseWriter, r *http.Request) {
+		n, _ := strconv.Atoi(r.PathValue("n"))
+		p.HoldSettings(n)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	admin.HandleFunc("POST /settings/{n}/release", func(w http.ResponseWriter, r *http.Request) {
+		n, _ := strconv.Atoi(r.PathValue("n"))
+		p.ReleaseSettings(n)
+		w.WriteHeader(http.StatusNoContent)
+	})
 	errc := make(chan error, 4)
 	go func() { errc <- p.ServeEgress(fmt.Sprintf(":%d", gateway.EgressPort)) }()
 	for addr, h := range map[string]http.Handler{public: p.Public(), ":9222": p, "127.0.0.1:9301": admin} {

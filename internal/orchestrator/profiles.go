@@ -102,7 +102,9 @@ func (o *Orchestrator) SaveProfile(ctx context.Context, uid, id, name string) (S
 		return res, err
 	}
 	prefix := fmt.Sprintf("profiles/%s/%s/%s/", uid, name, randHex(4))
+	release := o.holdOptions(vm)
 	resp, err := ag.SaveProfile(ctx, id, api.SaveProfileRequest{Prefix: prefix})
+	release()
 	if err != nil {
 		o.metrics.errors.WithLabelValues("save_profile").Inc()
 		o.store.addEvent(id, "profile_save_failed", map[string]any{"name": name, "error": err.Error()})

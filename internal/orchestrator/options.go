@@ -169,6 +169,26 @@ func (o *Orchestrator) dropOptions(vm api.VM) {
 	}
 }
 
+// holdOptions detaches the CDP proxy's own DevTools session from vm's browser
+// before a snapshot of it (fork, pause, profile), so that no copy wakes up
+// with a client that is no longer there (gateway/settings.go). The returned
+// func brings the session back.
+func (o *Orchestrator) holdOptions(vm api.VM) (release func()) {
+	if o.cfg.ProxyAdmin == "" || o.store.optionsOf(vm.ID).empty() {
+		return func() {}
+	}
+	post := func(what string) {
+		resp, err := http.Post(fmt.Sprintf("%s/settings/%d/%s", o.cfg.ProxyAdmin, vm.NetIndex, what), "", nil)
+		if err != nil {
+			log.Printf("%s: settings %s: %v", vm.ID, what, err)
+			return
+		}
+		resp.Body.Close()
+	}
+	post("hold")
+	return func() { post("release") }
+}
+
 // startWith creates a session's browser with its options in place: the
 // session row records them, and the API answers only once the browser has
 // them, so a client never sees the defaults first. If they cannot be applied,
@@ -228,7 +248,7 @@ func (o *Orchestrator) egress(op string, n int) error {
 	return nil
 }
 
-// reapplyOptions pushes the settings of every live session that has any, so
+// reapplyOptions pushes the settings of every running session that has any, so
 // that a restarted CDP proxy (which keeps them only in memory) gets them back.
 // Pushing settings the proxy already holds changes nothing.
 func (o *Orchestrator) reapplyOptions(ctx context.Context) {
@@ -251,7 +271,7 @@ func (o *Orchestrator) reapplyOptions(ctx context.Context) {
 	rows.Close()
 	for _, r := range live {
 		vm, err := o.store.GetVM(r.id)
-		if err != nil || (vm.State != StateRunning && vm.State != StatePaused && vm.State != StateMigrating) {
+		if err != nil || (vm.State != StateRunning && vm.State != StateMigrating) { // a paused one has none until it resumes
 			continue
 		}
 		if err := o.applyOptions(ctx, vm, r.s, 0); err != nil && !errors.Is(err, context.Canceled) {

@@ -29,6 +29,14 @@ import (
 // tab runs any script. The connection goes to the VM's fixed address like a
 // client's, so it survives a migration; when the browser goes away (a pause),
 // it reconnects as soon as the browser is back.
+//
+// Before a snapshot of the browser (a fork, a pause, a profile), the session
+// is held: it detaches from every tab and closes. A DevTools session still
+// attached when the snapshot is taken lives on in every copy as a client that
+// is no longer there, and one that asked to have new tabs wait for it
+// (waitForDebuggerOnStart) leaves the copy's navigations waiting for minutes,
+// until the dead connection times out. A held session comes back, and sets
+// the overrides again, when it is released.
 type Settings struct {
 	UserAgent string    `json:"user_agent,omitempty"`
 	Locale    string    `json:"locale,omitempty"`   // BCP 47, e.g. fr-FR
@@ -63,6 +71,8 @@ type settingsManager struct {
 
 	mu      sync.Mutex
 	applied chan struct{} // closed once the tabs that exist have their overrides
+	held    chan struct{} // while held (see HoldSettings): closed on release
+	holdReq chan chan struct{}
 }
 
 // SetSettings starts applying s to VM n's browser (replacing what it had) and,
@@ -82,7 +92,7 @@ func (p *Proxy) SetSettings(n int, s Settings, wait time.Duration) error {
 		old.cancel()
 		delete(p.settings, n)
 	}
-	m := &settingsManager{n: n, s: s, applied: make(chan struct{})}
+	m := &settingsManager{n: n, s: s, applied: make(chan struct{}), holdReq: make(chan chan struct{})}
 	p.settings[n] = m
 	p.mu.Unlock()
 	if !s.emulates() {
@@ -104,6 +114,51 @@ func (p *Proxy) DropSettings(n int) {
 	if m != nil && m.cancel != nil {
 		m.cancel()
 	}
+}
+
+// HoldSettings detaches the proxy's own session from VM n's browser and keeps
+// it away until ReleaseSettings, so that a snapshot taken meanwhile carries no
+// trace of it. It returns once the browser has let go of every tab.
+func (p *Proxy) HoldSettings(n int) {
+	p.mu.Lock()
+	m := p.settings[n]
+	p.mu.Unlock()
+	if m == nil || m.cancel == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.held != nil {
+		m.mu.Unlock()
+		return
+	}
+	m.held = make(chan struct{})
+	m.mu.Unlock()
+	done := make(chan struct{})
+	select {
+	case m.holdReq <- done: // a live session detaches, then answers
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+	case <-time.After(100 * time.Millisecond): // none (reconnecting): it waits for the release
+	}
+}
+
+// ReleaseSettings ends a hold: the session comes back and applies the
+// overrides again.
+func (p *Proxy) ReleaseSettings(n int) {
+	p.mu.Lock()
+	m := p.settings[n]
+	p.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.held != nil {
+		close(m.held)
+		m.held = nil
+	}
+	m.mu.Unlock()
 }
 
 // settingsFor returns VM n's settings, if any.
@@ -142,11 +197,21 @@ func (m *settingsManager) wait(d time.Duration) error {
 // one whenever the old one ends (the browser was paused, or restarted).
 func (m *settingsManager) run(ctx context.Context) {
 	for ctx.Err() == nil {
+		m.mu.Lock()
+		held := m.held
+		m.mu.Unlock()
+		if held != nil {
+			select {
+			case <-held:
+			case <-ctx.Done():
+				return
+			}
+		}
 		err := m.session(ctx)
 		if ctx.Err() != nil {
 			return
 		}
-		if err != nil && !errors.Is(err, context.Canceled) {
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, errHeld) {
 			log.Printf("vm %d: browser settings: %v (retrying)", m.n, err)
 		}
 		// Applied again on the next connection: until then, anyone waiting waits.
@@ -157,6 +222,9 @@ func (m *settingsManager) run(ctx context.Context) {
 		default:
 		}
 		m.mu.Unlock()
+		if errors.Is(err, errHeld) {
+			continue // back once released
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -164,6 +232,8 @@ func (m *settingsManager) run(ctx context.Context) {
 		}
 	}
 }
+
+var errHeld = errors.New("held")
 
 // cdpSession is a DevTools connection on which several flattened sessions
 // send commands and wait for their answers at once.
@@ -239,6 +309,8 @@ func (m *settingsManager) session(ctx context.Context) error {
 	var (
 		applying   sync.WaitGroup
 		defaultCtx atomic.Value // the browser context of the first page: the default one
+		smu        sync.Mutex
+		sessions   = map[string]bool{} // the tabs this session is attached to
 	)
 	apply := func(sid string, info targetInfo, waiting bool) {
 		defer applying.Done()
@@ -296,8 +368,21 @@ func (m *settingsManager) session(ctx context.Context) error {
 					WaitingForDebugger bool       `json:"waitingForDebugger"`
 				}
 				if json.Unmarshal(msg.Params, &ev) == nil {
+					smu.Lock()
+					sessions[ev.SessionID] = true
+					smu.Unlock()
 					applying.Add(1)
 					go apply(ev.SessionID, ev.TargetInfo, ev.WaitingForDebugger)
+				}
+			}
+			if msg.Method == "Target.detachedFromTarget" {
+				var ev struct {
+					SessionID string `json:"sessionId"`
+				}
+				if json.Unmarshal(msg.Params, &ev) == nil {
+					smu.Lock()
+					delete(sessions, ev.SessionID)
+					smu.Unlock()
 				}
 			}
 		}
@@ -329,7 +414,26 @@ func (m *settingsManager) session(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 	log.Printf("vm %d: browser settings applied", m.n)
-	return <-readErr
+	select {
+	case err := <-readErr:
+		return err
+	case done := <-m.holdReq:
+		// Stop attaching to new tabs, then leave the ones attached (which drops
+		// their overrides); Chrome answers each once it is done.
+		_, _ = s.call("", "Target.setAutoAttach", map[string]any{"autoAttach": false, "waitForDebuggerOnStart": false, "flatten": true})
+		smu.Lock()
+		ids := make([]string, 0, len(sessions))
+		for id := range sessions {
+			ids = append(ids, id)
+		}
+		smu.Unlock()
+		for _, id := range ids {
+			_, _ = s.call("", "Target.detachFromTarget", map[string]any{"sessionId": id})
+		}
+		c.Close(websocket.StatusNormalClosure, "")
+		close(done)
+		return errHeld
+	}
 }
 
 type targetInfo struct {

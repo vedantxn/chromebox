@@ -84,7 +84,9 @@ func (o *Orchestrator) fork(ctx context.Context, id string, n int, ttl time.Dura
 			return res, fmt.Errorf("no room for a copy, nothing paused: %v", here)
 		}
 	}
+	release := o.holdOptions(parent)
 	fr, err := ag.ForkImage(ctx, id, res.Image)
+	release()
 	if err != nil {
 		return res, err
 	}
