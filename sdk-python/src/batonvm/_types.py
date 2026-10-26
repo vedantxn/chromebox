@@ -25,6 +25,9 @@ class SessionData:
     #: wss URL for Playwright's ``chromium.connect_over_cdp`` or ``pyppeteer``.
     #: Only returned when a session is created, resumed or forked.
     connect_url: Optional[str] = None
+    #: The options the session was created with, as the API reports them (camelCase;
+    #: a proxy's password shows as "********").
+    options: Dict[str, Any] = field(default_factory=dict)
     raw: Dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     def _update(self, d: Dict[str, Any]) -> None:
@@ -37,6 +40,7 @@ class SessionData:
         self.end_reason = _f(d, "endReason", self.end_reason)
         self.migrations = _f(d, "migrations", self.migrations)
         self.connect_url = _f(d, "connectUrl", self.connect_url)
+        self.options = _f(d, "options", self.options)
         self.raw = d
 
 
@@ -124,12 +128,14 @@ class Usage:
     minutes_today: float
     max_minutes_per_day: float
     session_lifetime_minutes: float
+    #: The longest ``timeout_minutes`` a session may ask for.
+    max_session_minutes: float = 0
     raw: Dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
     def from_api(cls, d: Dict[str, Any]) -> "Usage":
         keys = ["running", "max_running", "paused", "max_paused", "profiles", "max_profiles",
-                "minutes_today", "max_minutes_per_day", "session_lifetime_minutes"]
+                "minutes_today", "max_minutes_per_day", "session_lifetime_minutes", "max_session_minutes"]
         return cls(*[_f(d, k, 0) for k in keys], raw=d)  # type: ignore[arg-type]
 
 
@@ -138,7 +144,7 @@ def session_fields(d: Dict[str, Any]) -> Dict[str, Any]:
     return dict(
         id=_f(d, "id", ""), status=_f(d, "status", ""), node=d.get("node"), created_at=d.get("createdAt"),
         expires_at=d.get("expiresAt"), ended_at=d.get("endedAt"), end_reason=d.get("endReason"),
-        migrations=_f(d, "migrations", 0), connect_url=d.get("connectUrl"), raw=d,
+        migrations=_f(d, "migrations", 0), connect_url=d.get("connectUrl"), options=_f(d, "options", {}), raw=d,
     )
 
 

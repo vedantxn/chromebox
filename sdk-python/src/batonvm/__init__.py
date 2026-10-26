@@ -16,7 +16,7 @@ from ._client import AsyncBaton, AsyncSession, Baton, Fork, Session
 from ._errors import AuthError, BatonError, CapacityError, LimitError, NotFoundError
 from ._types import Event, Migration, Pause, ProfileInfo, SavedProfile, Usage
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Baton", "AsyncBaton", "Session", "AsyncSession", "Fork",

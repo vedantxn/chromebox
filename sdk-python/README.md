@@ -67,12 +67,30 @@ session.save_profile("shop")         # log in once...
 later = baton.sessions.create(profile="shop")  # ...start already logged in
 ```
 
+## Options
+
+The browser has these before you connect, so the first page already sees them:
+
+```python
+session = baton.sessions.create(
+    viewport=(1280, 720),            # or {"width": 1280, "height": 720}
+    user_agent="MyAgent/1.0",
+    locale="fr-FR",                  # navigator.language and Accept-Language
+    timezone="Europe/Paris",         # any IANA name
+    timeout_minutes=30,              # 1-60, default 15
+    proxy={"server": "proxy.example.com:8080", "username": "u", "password": "p"},  # or "host:port"
+)
+print(session.options)               # what it started with; a proxy password shows as ********
+```
+
+All are optional and work with `profile=`. Forks and resumed sessions keep them. A value the API won't take raises `BatonError` with status 400 and says why.
+
 ## API
 
 | | |
 |---|---|
 | `Baton(api_key=None, base_url=None)` | client; `api_key` defaults to `BATON_API_KEY` (`AsyncBaton` for asyncio) |
-| `baton.sessions.create(profile=None)` | start a browser → `Session` with `connect_url` |
+| `baton.sessions.create(profile=None, *, viewport, user_agent, locale, timezone, timeout_minutes, proxy)` | start a browser → `Session` with `connect_url` and `options` |
 | `baton.sessions.list()` / `get(id)` / `delete(id)` | |
 | `session.migrate()` | move it to another machine → `Migration(from_node, to_node, paused_ms, unreachable_ms)` |
 | `session.fork(n)` | copy it into `n` new sessions → `Fork(sessions, paused_ms, errors)` |
@@ -88,6 +106,6 @@ Errors are `BatonError` with `.status`, raised as `AuthError` (401), `NotFoundEr
 
 ## Limits (free)
 
-2 sessions running at a time · 15 minutes per session · 60 browser-minutes per day · 10 new sessions per minute · 5 paused sessions (kept 7 days) · 3 profiles.
+2 sessions running at a time · 15 minutes per session (up to 60 with `timeout_minutes`) · 60 browser-minutes per day · 10 new sessions per minute · 5 paused sessions (kept 7 days) · 3 profiles.
 
 Source: https://github.com/vedantxn/chromebox (MIT). TypeScript: `npm install batonvm`.

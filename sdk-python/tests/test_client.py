@@ -60,6 +60,34 @@ def test_create_maps_the_session_and_keeps_unknown_fields():
     assert api.calls == [("POST", "/api/v1/sessions", {"profile": "shop"}, "Bearer bk_test")]
 
 
+def test_create_sends_options_in_camel_case():
+    opts = {"viewport": {"width": 1280, "height": 720}, "locale": "fr-FR", "proxy": {"server": "p:8080", "password": "********"}}
+    b, api = sync_client({("POST", "/api/v1/sessions"): (201, dict(SESSION, options=opts))})
+    s = b.sessions.create("shop", viewport=(1280, 720), user_agent="bot/1", locale="fr-FR", timezone="Europe/Paris",
+                          timeout_minutes=30, proxy={"server": "p:8080", "username": "u", "password": "pw"})
+    assert api.calls[0][2] == {"profile": "shop", "viewport": {"width": 1280, "height": 720}, "userAgent": "bot/1",
+                               "locale": "fr-FR", "timezone": "Europe/Paris", "timeoutMinutes": 30,
+                               "proxy": {"server": "p:8080", "username": "u", "password": "pw"}}
+    assert s.options == opts
+    b.sessions.create(viewport={"width": 800, "height": 600}, proxy="p:3128")
+    assert api.calls[1][2] == {"viewport": {"width": 800, "height": 600}, "proxy": {"server": "p:3128"}}
+    b.sessions.create()
+    assert api.calls[2][2] is None and b.sessions.create().options == opts
+
+
+def test_a_bad_option_is_a_baton_error():
+    b, _ = sync_client({("POST", "/api/v1/sessions"): (400, {"error": "timezone: unknown zone"})})
+    with pytest.raises(BatonError, match="unknown zone") as e:
+        b.sessions.create(timezone="Mars/Olympus")
+    assert e.value.status == 400
+
+
+async def test_async_create_sends_options():
+    b, api = async_client({("POST", "/api/v1/sessions"): (201, SESSION)})
+    await b.sessions.create(locale="de-DE", timeout_minutes=5)
+    assert api.calls[0][2] == {"locale": "de-DE", "timeoutMinutes": 5}
+
+
 def test_session_methods_hit_their_endpoints():
     b, api = sync_client({
         ("POST", "/api/v1/sessions"): (201, SESSION),
@@ -94,14 +122,14 @@ def test_profiles_and_usage():
         ("DELETE", "/api/v1/profiles/my%20shop"): (204, None),
         ("GET", "/api/v1/usage"): (200, {"running": 1, "max_running": 2, "paused": 0, "max_paused": 5, "profiles": 1,
                                          "max_profiles": 3, "minutes_today": 3.2, "max_minutes_per_day": 60,
-                                         "session_lifetime_minutes": 15}),
+                                         "session_lifetime_minutes": 15, "max_session_minutes": 60}),
         ("GET", "/api/v1/sessions"): (200, [SESSION]),
         ("GET", "/api/v1/sessions/vm-1"): (200, SESSION),
     })
     assert b.profiles.list()[0].name == "my shop"
     b.profiles.delete("my shop")
     u = b.usage()
-    assert (u.running, u.max_running, u.minutes_today) == (1, 2, 3.2)
+    assert (u.running, u.max_running, u.minutes_today, u.max_session_minutes) == (1, 2, 3.2, 60)
     assert [s.id for s in b.sessions.list()] == ["vm-1"] and b.sessions.get("vm-1").status == "running"
 
 

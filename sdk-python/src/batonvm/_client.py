@@ -8,7 +8,7 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 from urllib.parse import quote
 
 import httpx
@@ -57,6 +57,49 @@ def _result(res: httpx.Response) -> Any:
         msg = data.get("error") if isinstance(data, dict) else None
         raise error_for(res.status_code, msg or res.reason_phrase or f"HTTP {res.status_code}")
     return data
+
+
+Viewport = Union[Sequence[int], Mapping[str, int]]
+Proxy = Union[str, Mapping[str, Optional[str]]]
+
+
+def _create_body(profile: Optional[str], viewport: Optional[Viewport], user_agent: Optional[str], locale: Optional[str],
+                 timezone: Optional[str], timeout_minutes: Optional[int], proxy: Optional[Proxy]) -> Optional[Dict[str, Any]]:
+    """The create request, in the API's camelCase. The API checks the values (400 if one is wrong)."""
+    body: Dict[str, Any] = {}
+    if profile:
+        body["profile"] = profile
+    if viewport is not None:
+        if isinstance(viewport, Mapping):
+            body["viewport"] = {"width": viewport["width"], "height": viewport["height"]}
+        else:
+            width, height = viewport
+            body["viewport"] = {"width": width, "height": height}
+    if user_agent is not None:
+        body["userAgent"] = user_agent
+    if locale is not None:
+        body["locale"] = locale
+    if timezone is not None:
+        body["timezone"] = timezone
+    if timeout_minutes is not None:
+        body["timeoutMinutes"] = timeout_minutes
+    if proxy is not None:
+        body["proxy"] = {"server": proxy} if isinstance(proxy, str) else {k: v for k, v in proxy.items() if v is not None}
+    return body or None
+
+
+_CREATE_DOC = """Start a browser.
+
+        profile: a saved profile to start from (already logged in, on the pages it was saved on).
+        viewport: ``(width, height)`` or ``{"width": ..., "height": ...}`` (320-3840 x 240-2160).
+        user_agent: sent in requests and reported by ``navigator.userAgent``.
+        locale: for example ``"fr-FR"`` (``navigator.language``, Accept-Language).
+        timezone: an IANA name such as ``"Europe/Paris"`` or ``"UTC"``.
+        timeout_minutes: how long the session may run (1-60, default 15).
+        proxy: an HTTP proxy of your own, with CONNECT: ``"host:port"`` or
+            ``{"server": "host:port", "username": ..., "password": ...}``. Every page's traffic leaves through it.
+
+        The browser has all of these before you connect."""
 
 
 @dataclass
@@ -137,10 +180,13 @@ class _Sessions:
     def _session(self, d: Dict[str, Any]) -> Session:
         return Session(**session_fields(d), _client=self._c)
 
-    def create(self, profile: Optional[str] = None) -> Session:
-        """Start a browser, optionally from a saved profile (already logged in, on the pages it was saved on)."""
-        body = {"profile": profile} if profile else None
+    def create(self, profile: Optional[str] = None, *, viewport: Optional[Viewport] = None, user_agent: Optional[str] = None,
+               locale: Optional[str] = None, timezone: Optional[str] = None, timeout_minutes: Optional[int] = None,
+               proxy: Optional[Proxy] = None) -> Session:
+        body = _create_body(profile, viewport, user_agent, locale, timezone, timeout_minutes, proxy)
         return self._session(self._c._request("POST", "/api/v1/sessions", body, wait_for_capacity=True))
+
+    create.__doc__ = _CREATE_DOC
 
     def list(self) -> List[Session]:
         return [self._session(d) for d in self._c._request("GET", "/api/v1/sessions")]
@@ -275,9 +321,13 @@ class _AsyncSessions:
     def _session(self, d: Dict[str, Any]) -> AsyncSession:
         return AsyncSession(**session_fields(d), _client=self._c)
 
-    async def create(self, profile: Optional[str] = None) -> AsyncSession:
-        body = {"profile": profile} if profile else None
+    async def create(self, profile: Optional[str] = None, *, viewport: Optional[Viewport] = None, user_agent: Optional[str] = None,
+                     locale: Optional[str] = None, timezone: Optional[str] = None, timeout_minutes: Optional[int] = None,
+                     proxy: Optional[Proxy] = None) -> AsyncSession:
+        body = _create_body(profile, viewport, user_agent, locale, timezone, timeout_minutes, proxy)
         return self._session(await self._c._request("POST", "/api/v1/sessions", body, wait_for_capacity=True))
+
+    create.__doc__ = _CREATE_DOC
 
     async def list(self) -> List[AsyncSession]:
         return [self._session(d) for d in await self._c._request("GET", "/api/v1/sessions")]
