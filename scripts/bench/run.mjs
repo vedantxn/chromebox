@@ -31,7 +31,7 @@ async function orch(method, path, body) {
   if (!r.ok) throw new Error(`${method} ${path}: ${r.status} ${text.trim()}`);
   return text ? JSON.parse(text) : null;
 }
-const create = () => orch('POST', '/v1/vms', { base: 'chrome-v1' });
+const create = () => orch('POST', '/v1/vms', { base: 'chrome-v2' });
 const del = (id) => orch('DELETE', `/v1/vms/${id}`).catch(() => {});
 const list = () => orch('GET', '/v1/vms');
 const cdp = (vm) => `http://${GW}:9222/v/${vm.net_index}`;

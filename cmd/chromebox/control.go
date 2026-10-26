@@ -174,7 +174,7 @@ func ctlCmd(args []string) error {
 	}
 	switch args[0] {
 	case "create":
-		b := "chrome-v1"
+		b := base.Default
 		if len(args) > 1 {
 			b = args[1]
 		}
@@ -241,7 +241,7 @@ func ctlCmd(args []string) error {
 					VM      api.VM  `json:"vm"`
 					TotalMs float64 `json:"total_ms"`
 				}
-				if err := call("POST", "/v1/vms", map[string]string{"base": "chrome-v1"}, &out); err != nil {
+				if err := call("POST", "/v1/vms", map[string]string{"base": base.Default}, &out); err != nil {
 					mu.Lock()
 					if firstErr == nil {
 						firstErr = err

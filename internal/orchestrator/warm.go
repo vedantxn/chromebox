@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/api"
+	"github.com/vedantxn/chromebox/internal/base"
 )
 
 // The warm pool: a few browsers per node that are already restored, settled
@@ -36,7 +37,7 @@ type WarmConfig struct {
 
 // WarmFromEnv reads CHROMEBOX_WARM_PER_NODE (default 1) and CHROMEBOX_WARM_URL.
 func WarmFromEnv() WarmConfig {
-	c := WarmConfig{PerNode: 1, Base: "chrome-v1", URL: "https://batonvm.vercel.app/docs", MaxAge: 10 * time.Minute}
+	c := WarmConfig{PerNode: 1, Base: base.Default, URL: "https://batonvm.vercel.app/docs", MaxAge: 10 * time.Minute}
 	if v, err := strconv.Atoi(os.Getenv("CHROMEBOX_WARM_PER_NODE")); err == nil && v >= 0 {
 		c.PerNode = v
 	}

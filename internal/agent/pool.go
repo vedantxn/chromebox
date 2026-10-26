@@ -21,7 +21,7 @@ import (
 // and renames it to the VM's id, and the slot is replaced in the background.
 //
 //	CHROMEBOX_POOL       slots to keep ready (default 2; 0 turns it off)
-//	CHROMEBOX_POOL_BASE  the base they are for (default chrome-v1)
+//	CHROMEBOX_POOL_BASE  the base they are for (default base.Default)
 //
 // Slots are not VMs: they hold no guest memory, are never reported in
 // heartbeats (or the orchestrator would fence them as unknown) and are
@@ -48,7 +48,7 @@ func newPool() *pool {
 	}
 	b := os.Getenv("CHROMEBOX_POOL_BASE")
 	if b == "" {
-		b = "chrome-v1"
+		b = base.Default
 	}
 	delay := 2 * time.Second
 	if v, err := time.ParseDuration(os.Getenv("CHROMEBOX_POOL_REFILL_DELAY")); err == nil {

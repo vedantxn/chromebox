@@ -22,6 +22,7 @@ import (
 
 	"github.com/vedantxn/chromebox/internal/agent"
 	"github.com/vedantxn/chromebox/internal/api"
+	"github.com/vedantxn/chromebox/internal/base"
 	"github.com/vedantxn/chromebox/internal/gateway"
 	"github.com/vedantxn/chromebox/internal/netsetup"
 	"github.com/vedantxn/chromebox/internal/timing"
@@ -434,7 +435,7 @@ func (o *Orchestrator) createVM(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Base == "" {
-		req.Base = "chrome-v1"
+		req.Base = base.Default
 	}
 	if req.TTLSeconds <= 0 || req.TTLSeconds > 3600 {
 		req.TTLSeconds = 900 // a VM nobody deletes is deleted after 15 minutes

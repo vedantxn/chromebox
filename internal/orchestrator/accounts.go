@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/vedantxn/chromebox/internal/api"
+	"github.com/vedantxn/chromebox/internal/base"
 )
 
 // Per-account limits. They are checked under the placement lock, in the same
@@ -281,7 +282,7 @@ func (o *Orchestrator) createSession(w http.ResponseWriter, r *http.Request) {
 	if in.Profile != "" {
 		vm, _, err = o.CreateFromProfile(r.Context(), uid, in.Profile, ttl)
 	} else {
-		vm, err = o.CreateFor(r.Context(), uid, "chrome-v1", ttl)
+		vm, err = o.CreateFor(r.Context(), uid, base.Default, ttl)
 	}
 	if err == nil {
 		if err = o.startWith(r.Context(), vm, in.SessionOptions); err != nil {

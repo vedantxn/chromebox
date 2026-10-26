@@ -34,6 +34,11 @@ const (
 	// Index is the network identity the base VM was built with. It is a
 	// reserved address that no real VM uses; clones replace it.
 	Index = netsetup.MaxIndex
+	// Default is the base new browsers are made from. chrome-v2's guest agent
+	// drops the DevTools connections a restored copy wakes up with; chrome-v1
+	// stays on every node, since stored sessions and profiles keep their disks
+	// as the blocks that differ from it.
+	Default = "chrome-v2"
 )
 
 // Manifest describes a stored base.

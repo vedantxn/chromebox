@@ -11,7 +11,10 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -106,5 +109,82 @@ func setIdentity(r request) error {
 	// One packet to the gateway makes it learn this guest's address and MAC
 	// (ARP) before any real traffic arrives.
 	go exec.Command("ping", "-c1", "-W1", r.Gateway).Run()
+	if n := dropBridged("/proc"); n > 0 {
+		log.Printf("set-identity: dropped %d DevTools connection(s) from before the snapshot", n)
+	}
 	return nil
+}
+
+// dropBridged ends every connection chrome-bridge carries, by killing socat's
+// forked children (one per connection), and returns how many it killed.
+//
+// Why: a restored copy (a fork's copy, a resumed session, a session from a
+// profile) wakes up with the DevTools clients its parent had at the snapshot
+// still connected, as far as Chrome knows. Their TCP connections now lead
+// nowhere (the address they used is gone) and would take ~15 minutes to time
+// out. Until then Chrome keeps their sessions, and a client like Playwright
+// has asked for every new target to wait for it (waitForDebuggerOnStart), so
+// the copy's navigations hang. Killed, the children close their end on
+// 127.0.0.1:9222, Chrome sees the clients leave and lets the targets run.
+// Nobody else is connected yet: the host sends set-identity before it hands
+// the VM out, and a migration, which keeps its clients, never sends it.
+//
+// It reads /proc rather than running pkill: starting a process in the guest
+// costs several milliseconds, and this is on the critical path of every start.
+func dropBridged(proc string) int {
+	n := 0
+	for _, pid := range bridged(proc) {
+		if syscall.Kill(pid, syscall.SIGKILL) == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// bridged returns the pids of socat's forked children: socat processes whose
+// parent is socat (the listener, which stays).
+func bridged(proc string) []int {
+	stats, _ := filepath.Glob(filepath.Join(proc, "[0-9]*", "stat"))
+	comm := map[int]string{}
+	parent := map[int]int{}
+	for _, f := range stats {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue // it exited
+		}
+		if pid, c, ppid, ok := parseStat(b); ok {
+			comm[pid], parent[pid] = c, ppid
+		}
+	}
+	var pids []int
+	for pid, c := range comm {
+		if c == "socat" && comm[parent[pid]] == "socat" {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// parseStat reads the pid, command name and parent pid from /proc/<pid>/stat:
+// "pid (comm) state ppid ...". The name may itself hold spaces or ")", so it
+// ends at the last ")".
+func parseStat(b []byte) (pid int, comm string, ppid int, ok bool) {
+	s := string(b)
+	open, end := strings.IndexByte(s, '('), strings.LastIndexByte(s, ')')
+	if open < 0 || end < open {
+		return 0, "", 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(s[:open]))
+	if err != nil {
+		return 0, "", 0, false
+	}
+	f := strings.Fields(s[end+1:]) // state, ppid, ...
+	if len(f) < 2 {
+		return 0, "", 0, false
+	}
+	ppid, err = strconv.Atoi(f[1])
+	if err != nil {
+		return 0, "", 0, false
+	}
+	return pid, s[open+1 : end], ppid, true
 }
