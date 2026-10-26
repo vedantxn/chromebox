@@ -77,8 +77,27 @@ with baton.sessions.create() as session, sync_playwright() as p:
     later.close()
 # the session ends with the with-block`;
 
+// Run against production from us-east-1 before it went on this page.
+const options = `const session = await baton.sessions.create({
+  viewport: { width: 1280, height: 800 },
+  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ...",
+  locale: "fr-FR",            // Accept-Language, navigator.language, Intl
+  timezone: "Europe/Paris",   // Date and Intl in every page
+  timeoutMinutes: 45,         // up to 60; the default is 15
+  proxy: { server: "proxy.example.com:8080", username: "me", password: "..." },
+});`;
+
+const optionRows: [string, string][] = [
+  ["viewport", "Page size in CSS pixels, 320-3840 by 240-2160."],
+  ["userAgent", "Sent with every request and reported by navigator.userAgent."],
+  ["locale", "A language tag like fr-FR: the Accept-Language header, navigator.language and number and date formats."],
+  ["timezone", "An IANA name like Europe/Paris, for Date and Intl."],
+  ["timeoutMinutes", "How long the session may run, up to 60. The default is 15."],
+  ["proxy", "Your own HTTP proxy (it must support CONNECT). Every connection the browser opens goes out through it, so sites see its address. UDP is blocked, so QUIC and WebRTC can't go around it."],
+];
+
 const routes: [string, string][] = [
-  ["POST /api/v1/sessions {profile?}", "Start a browser (from a saved profile: already logged in); returns connectUrl"],
+  ["POST /api/v1/sessions {profile?, ...options}", "Start a browser (from a saved profile: already logged in), with the options below; returns connectUrl"],
   ["GET /api/v1/sessions[/:id]", "Your sessions"],
   ["DELETE /api/v1/sessions/:id", "End it"],
   ["POST /api/v1/sessions/:id/migrate", "Move it to another machine, connection kept"],
@@ -176,6 +195,27 @@ export default function Docs() {
       </Frame>
 
       <Section
+        id="options"
+        title="Session options"
+        lede="Set per session when you create it. The browser has them before you connect, on every tab it opens, and keeps them when it moves, forks, pauses and resumes."
+      >
+        <div className="space-y-5">
+          <CodeBlock code={options} lang="ts" file="options.ts" />
+          <Panel>
+            <DataTable
+              head={["option", "what it does"]}
+              text={[0, 1]}
+              minWidth={640}
+              rows={optionRows.map(([a, b]) => [
+                <code key="a" className="font-mono text-[12.5px] whitespace-nowrap text-foreground">{a}</code>,
+                b,
+              ])}
+            />
+          </Panel>
+        </div>
+      </Section>
+
+      <Section
         id="rest"
         title="The REST API"
         lede={
@@ -209,7 +249,7 @@ export default function Docs() {
       >
         <StatRow cols={4}>
           <Stat value="2" label="sessions running at once" note="10 new sessions a minute" />
-          <Stat value="15 min" label="longest session" />
+          <Stat value="60 min" label="longest session" note="15 unless you set timeoutMinutes" />
           <Stat value="60 min" label="browser time a day" note="paused time doesn’t count" />
           <Stat value="5 · 3" label="paused sessions · profiles" note="paused ones kept 7 days" />
         </StatRow>

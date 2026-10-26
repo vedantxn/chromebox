@@ -94,7 +94,7 @@ export const install = {
 
 export const freeTier = [
   ["Sessions at once", "2"],
-  ["Longest session", "15 minutes"],
+  ["Longest session", "60 minutes (15 by default)"],
   ["Browser time", "60 minutes a day"],
   ["Sign up", "Email or GitHub, no card"],
 ] as const;

@@ -1,6 +1,6 @@
 # Baton
 
-Cloud browsers for AI agents. Every session is a real Chrome in its own Firecracker microVM, restored from a snapshot in about 190 ms. A running browser can **move to another machine mid-session** without the agent's connection dropping, be **forked** into copies that start from the same logged-in state, **paused** to storage (and cost nothing) and resumed on any machine, and **saved as a profile** so later sessions start already logged in. Machines are **started and stopped automatically** by load.
+Cloud browsers for AI agents. Every session is a real Chrome in its own Firecracker microVM, restored from a snapshot in about 190 ms. A running browser can **move to another machine mid-session** without the agent's connection dropping, be **forked** into copies that start from the same logged-in state, **paused** to storage (and cost nothing) and resumed on any machine, and **saved as a profile** so later sessions start already logged in. Machines are **started and stopped automatically** by load. Each session can set its own **viewport, user agent, locale, timezone, timeout (up to an hour) and proxy**.
 
 - Live: **https://batonvm.vercel.app** (sign in with GitHub, get an API key)
 - SDKs: `npm install batonvm` ([sdk/](sdk/)) · `pip install batonvm` ([sdk-python/](sdk-python/), sync and async)
@@ -98,7 +98,7 @@ On Steel's open-source [remote-browser benchmark](https://github.com/steel-dev/b
 | [internal/uffd](internal/uffd), [internal/pageserver](internal/pageserver) | userfaultfd handler and the memory stream for post-copy |
 | [internal/blockdiff](internal/blockdiff) | disk deltas from extent maps (FIEMAP) |
 | [internal/orchestrator](internal/orchestrator), [internal/agent](internal/agent) | placement, migration, drain, fork, reconciliation, accounts |
-| [internal/gateway](internal/gateway), [internal/token](internal/token) | CDP proxy, routes, session tokens |
+| [internal/gateway](internal/gateway), [internal/token](internal/token) | CDP proxy, session options (browser overrides, egress through a customer's proxy), routes, session tokens |
 | [web](web) | Next.js dashboard and public API (Vercel) |
 | [sdk](sdk) | `batonvm`, the TypeScript SDK |
 | [scripts](scripts) | AWS setup, host setup, guest images, tests and demos, benchmarks |
