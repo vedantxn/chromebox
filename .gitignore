@@ -24,3 +24,7 @@ scripts/aws/bucket.txt
 # Design-tool working files and raw downloads for the landing page (the used copies live in web/public/landing)
 web/.taste-skill/
 web/assets/
+
+# The MCP server build
+integrations/mcp/dist/
+sdk/*.tgz

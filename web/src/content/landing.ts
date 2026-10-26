@@ -5,6 +5,7 @@
 import benchJson from "@/data/benchmarks.json";
 import arenaJson from "@/data/arena.json";
 import chartJson from "@/data/arena-chart.json";
+import { repoTree } from "@/lib/shared";
 
 type Sample = { p50: number; samples?: number[] };
 const t = benchJson.tests as unknown as Record<string, Record<string, Sample>> & {
@@ -105,6 +106,9 @@ export const testedWith = [
   { name: "Puppeteer", href: "/docs" },
   { name: "Browser Arena", href: "/benchmarks" },
   { name: "Steel browserbench", href: "/benchmarks" },
+  { name: "Stagehand", href: repoTree("integrations/stagehand") },
+  { name: "browser-use", href: repoTree("integrations/browser-use") },
+  { name: "MCP", href: repoTree("integrations/mcp") },
   { name: "Any CDP client", href: "/docs" },
 ];
 

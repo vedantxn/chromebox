@@ -1,0 +1,24 @@
+{
+  "name": "batonvm-mcp",
+  "version": "0.1.0",
+  "description": "An MCP server that gives Claude, Cursor and other MCP clients a Baton cloud browser",
+  "license": "MIT",
+  "homepage": "https://batonvm.vercel.app",
+  "repository": { "type": "git", "url": "git+https://github.com/vedantxn/chromebox.git", "directory": "integrations/mcp" },
+  "bugs": { "url": "https://github.com/vedantxn/chromebox/issues" },
+  "keywords": ["mcp", "browser", "playwright", "cdp", "agents", "claude", "cursor"],
+  "type": "module",
+  "bin": { "batonvm-mcp": "dist/index.js" },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && chmod +x dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "batonvm": "^0.4.0",
+    "playwright-core": "^1.57.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": { "@types/node": "^22.0.0", "typescript": "^5.6.0" }
+}

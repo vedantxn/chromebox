@@ -1,0 +1,11 @@
+{
+  "name": "baton-stagehand-example",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node index.mjs" },
+  "dependencies": {
+    "@browserbasehq/stagehand": "^3.7.3",
+    "batonvm": "^0.4.0",
+    "zod": "^4.0.0"
+  }
+}
