@@ -5,8 +5,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,7 +33,7 @@ import (
 // always-on node is never drained or stopped.
 type AutoscaleConfig struct {
 	Enabled   bool
-	AlwaysOn  string        // never drained or stopped (default node-a)
+	AlwaysOn  []string      // kept running: never drained or stopped, started if found stopped (default node-a)
 	MaxNodes  int           // nodes up at once, including AlwaysOn (default 3)
 	Headroom  int           // VMs of spare room to keep (default 1)
 	Cooldown  time.Duration // between actions (default 2m)
@@ -42,10 +44,10 @@ type AutoscaleConfig struct {
 // AutoscaleFromEnv reads CHROMEBOX_AUTOSCALE (1 to enable) and the optional
 // CHROMEBOX_ALWAYS_ON, _MAX_NODES, _HEADROOM, _AUTOSCALE_COOLDOWN, _IDLE_STOP.
 func AutoscaleFromEnv() AutoscaleConfig {
-	c := AutoscaleConfig{Enabled: os.Getenv("CHROMEBOX_AUTOSCALE") == "1", AlwaysOn: "node-a", MaxNodes: 3, Headroom: 1,
+	c := AutoscaleConfig{Enabled: os.Getenv("CHROMEBOX_AUTOSCALE") == "1", AlwaysOn: []string{"node-a"}, MaxNodes: 3, Headroom: 1,
 		Cooldown: 2 * time.Minute, IdleStop: 5 * time.Minute, StartWait: 4 * time.Minute}
-	if v := os.Getenv("CHROMEBOX_ALWAYS_ON"); v != "" {
-		c.AlwaysOn = v
+	if v := os.Getenv("CHROMEBOX_ALWAYS_ON"); v != "" { // a comma-separated list
+		c.AlwaysOn = strings.Split(v, ",")
 	}
 	if n, err := strconv.Atoi(os.Getenv("CHROMEBOX_MAX_NODES")); err == nil && n > 0 {
 		c.MaxNodes = n
@@ -91,6 +93,9 @@ type Action struct {
 type decision struct{ Kind, Node, Reason string }
 
 // decide picks the next action, if any. vmMiB is one VM's memory.
+// alwaysOn reports whether node is one the autoscaler keeps running.
+func (c AutoscaleConfig) alwaysOn(node string) bool { return slices.Contains(c.AlwaysOn, node) }
+
 func decide(nodes []asNode, vmMiB int, c AutoscaleConfig, pressure bool, sinceLast time.Duration) decision {
 	for _, n := range nodes {
 		if n.State != "" {
@@ -109,8 +114,15 @@ func decide(nodes []asNode, vmMiB int, c AutoscaleConfig, pressure bool, sinceLa
 	// Stopping an empty drained node needs no cooldown after the drain: it has
 	// already waited IdleStop.
 	for _, n := range nodes {
-		if n.Name != c.AlwaysOn && n.Up && n.Cordoned && n.VMs == 0 && n.EmptyFor >= c.IdleStop && !pressure {
+		if !c.alwaysOn(n.Name) && n.Up && n.Cordoned && n.VMs == 0 && n.EmptyFor >= c.IdleStop && !pressure {
 			return decision{"stop", n.Name, "no VMs for " + n.EmptyFor.Round(time.Second).String()}
+		}
+	}
+	// An always-on node that is not running (a reboot, or one added to the
+	// list) is started, whatever the load.
+	for _, n := range nodes {
+		if c.alwaysOn(n.Name) && !n.Up {
+			return decision{"start", n.Name, "always on"}
 		}
 	}
 	if sinceLast < c.Cooldown {
@@ -139,7 +151,7 @@ func decide(nodes []asNode, vmMiB int, c AutoscaleConfig, pressure bool, sinceLa
 	var best *asNode
 	for i := range nodes {
 		n := &nodes[i]
-		if n.Name == c.AlwaysOn || !n.Up || n.Cordoned {
+		if c.alwaysOn(n.Name) || !n.Up || n.Cordoned {
 			continue
 		}
 		others := 0
@@ -157,7 +169,7 @@ func decide(nodes []asNode, vmMiB int, c AutoscaleConfig, pressure bool, sinceLa
 	}
 	// A node we cordoned that no longer fits elsewhere (load came back): reopen it.
 	for _, n := range nodes {
-		if n.Name != c.AlwaysOn && n.Up && n.Cordoned && n.VMs > 0 {
+		if !c.alwaysOn(n.Name) && n.Up && n.Cordoned && n.VMs > 0 {
 			others := 0
 			for _, o := range nodes {
 				if o.Name != n.Name && o.Up && !o.Cordoned {

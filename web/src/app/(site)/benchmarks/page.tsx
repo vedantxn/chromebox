@@ -4,7 +4,7 @@ import arena from "@/data/arena.json";
 import { ArenaChart } from "@/components/sections/benchmarks";
 import { MoreLink, Section } from "@/components/site/frame";
 import { DataTable, Note, PageHead, Panel, PanelHead, Stat, StatRow, type Cell } from "@/components/site/page";
-import { ours } from "@/content/landing";
+import { ours, rank } from "@/content/landing";
 import { repoTree } from "@/lib/shared";
 
 // The numbers come from JSON files written by the benchmark scripts on a client in us-east-1
@@ -89,7 +89,7 @@ export default function Benchmarks() {
 
       <div className="mx-auto mt-12 w-full max-w-[1264px] px-5 sm:mt-16 sm:px-8">
         <StatRow cols={4}>
-          <Stat value={ms(ours.total.p50)} label="a whole session on Browser Arena" note={`p95 ${ms(ours.total.p95)}`} tone="brand" />
+          <Stat value={ms(ours.total.p50)} label="a whole session on Browser Arena" note={`${rank.median} of ${rank.of} by the median, ${rank.p95} by p95 (${ms(ours.total.p95)})`} tone="brand" />
           <Stat value={ms(fresh.p50)} label="new browser, request → answering CDP" note={`p95 ${ms(fresh.p95)}`} />
           <Stat value={ms(mig.paused.p50)} label="paused while it moves machines" note={`a live client’s longest wait: ${ms(mig.client_longest_wait.p50)}`} />
           <Stat value={ms(f1.parent_paused.p50)} label="paused to fork a running browser" note={`3 copies ready in ${s(f3.all_copies_ready.p50)}`} />

@@ -74,11 +74,18 @@ export type ChartProvider = {
   successful: number;
   total: { p50: number; p95: number; p99: number };
 };
-// Left off the site's chart: Notte and Lightpanda. Their runs stay in data/arena-chart.json.
-const HIDDEN = ["notte", "lightpanda"];
-const all = chartJson as { harness: string; providers: ChartProvider[] };
-export const chart = { ...all, providers: all.providers.filter((p) => !HIDDEN.includes(p.id)) };
+// Every provider Browser Arena publishes raw results for, none left off.
+export const chart = chartJson as { harness: string; providers: ChartProvider[] };
 export const ours = chart.providers.find((p) => p.id === "baton")!;
+
+/** Where our row ranks among all of them (1 = fastest), by the median, Browser Arena's own measure, and by p95. */
+const place = (key: "p50" | "p95") => 1 + chart.providers.filter((p) => p.total[key] < ours.total[key]).length;
+const ordinal = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
+export const rank = {
+  median: ordinal(place("p50")),
+  p95: ordinal(place("p95")),
+  of: chart.providers.length,
+};
 
 export const install = {
   npm: "npm i batonvm playwright-core",

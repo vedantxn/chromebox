@@ -1,4 +1,4 @@
-import { arena, chart, ours } from "@/content/landing";
+import { arena, chart, ours, rank } from "@/content/landing";
 import { MoreLink, Section } from "@/components/site/frame";
 import { BenchChart, type BenchRow, type BenchTab } from "./bench-chart";
 
@@ -40,7 +40,7 @@ export function Benchmarks() {
     <Section
       id="benchmarks"
       title={`A whole session in ${ours.total.p50} ms.`}
-      lede={`Create, connect over CDP, load a page and release, timed end to end by Browser Arena’s own harness, 100 sessions in a row. Down from ${arena.before.toLocaleString("en-US")} ms the morning we started on it.`}
+      lede={`Create, connect over CDP, load a page and release, timed end to end by Browser Arena’s own harness, 100 sessions in a row: ${rank.median} of ${rank.of} by the median, Browser Arena’s own measure, and ${rank.p95} by p95. Down from ${arena.before.toLocaleString("en-US")} ms the morning we started on it.`}
       action={<MoreLink href="/benchmarks">How it was measured</MoreLink>}
     >
       <ArenaChart />

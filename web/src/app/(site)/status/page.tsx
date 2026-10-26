@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { connection } from "next/server";
 import { Frame, MoreLink, Section } from "@/components/site/frame";
 import { DataTable, Note, PageHead, Panel, PanelHead, Stat, StatRow } from "@/components/site/page";
 import { cn } from "@/lib/cn";
@@ -37,6 +38,7 @@ function Dot({ ok, off = false }: { ok: boolean; off?: boolean }) {
 }
 
 async function Body() {
+  await connection(); // per request, not frozen at build (getStats caches for 30 s)
   const s = await getStats();
   const h = health(s);
   const up = s?.nodes.filter((n) => n.up).length ?? 0;

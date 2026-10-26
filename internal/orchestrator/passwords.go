@@ -145,9 +145,10 @@ type passwordIn struct {
 	IP       string `json:"ip"` // the visitor's address, as the site saw it; for the signup limit
 }
 
-func readPasswordIn(r *http.Request) (passwordIn, string) {
+func readPasswordIn(w http.ResponseWriter, r *http.Request) (passwordIn, string) {
 	var in passwordIn
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	// A form's worth at most: a huge body would otherwise be read, and hashed.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
 		return in, "bad request"
 	}
 	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
@@ -159,7 +160,7 @@ func readPasswordIn(r *http.Request) (passwordIn, string) {
 
 // signup makes an account from an email address and a password.
 func (o *Orchestrator) signup(w http.ResponseWriter, r *http.Request) {
-	in, problem := readPasswordIn(r)
+	in, problem := readPasswordIn(w, r)
 	if problem != "" {
 		http.Error(w, problem, http.StatusBadRequest)
 		return
@@ -211,8 +212,8 @@ func (o *Orchestrator) signup(w http.ResponseWriter, r *http.Request) {
 // password get the same answer; after maxFailedLogins failures in a row an
 // address is refused for a while, whatever the password.
 func (o *Orchestrator) login(w http.ResponseWriter, r *http.Request) {
-	in, problem := readPasswordIn(r)
-	if problem != "" {
+	in, problem := readPasswordIn(w, r)
+	if problem != "" || len([]rune(in.Password)) > maxPassword {
 		http.Error(w, "wrong email or password", http.StatusUnauthorized)
 		return
 	}

@@ -7,7 +7,7 @@ import (
 
 const vm = 1024
 
-var cfg = AutoscaleConfig{Enabled: true, AlwaysOn: "node-a", MaxNodes: 3, Headroom: 1,
+var cfg = AutoscaleConfig{Enabled: true, AlwaysOn: []string{"node-a"}, MaxNodes: 3, Headroom: 1,
 	Cooldown: 2 * time.Minute, IdleStop: 5 * time.Minute}
 
 func node(name string, up bool, used, free, vms int) asNode {
@@ -103,5 +103,20 @@ func TestReopensANodeWhenLoadComesBack(t *testing.T) {
 	nodes := []asNode{node("node-a", true, 4, 0, 4), b}
 	if d := decide(nodes, vm, cfg, false, time.Hour); d.Kind != "reopen" || d.Node != "node-b" {
 		t.Fatalf("got %+v, want to reopen node-b", d)
+	}
+}
+
+func TestKeepsEveryAlwaysOnNodeRunning(t *testing.T) {
+	two := cfg
+	two.AlwaysOn = []string{"node-a", "node-b"}
+	// node-b is stopped: it is started even with no load at all.
+	nodes := []asNode{node("node-a", true, 0, 4, 0), node("node-b", false, 0, 0, 0)}
+	if d := decide(nodes, vm, two, false, time.Hour); d.Kind != "start" || d.Node != "node-b" {
+		t.Fatalf("got %+v, want to start node-b", d)
+	}
+	// Running and empty, its VMs fitting elsewhere: never drained or stopped.
+	nodes = []asNode{node("node-a", true, 0, 4, 0), node("node-b", true, 0, 4, 0)}
+	if d := decide(nodes, vm, two, false, time.Hour); d.Node == "node-b" || d.Node == "node-a" {
+		t.Fatalf("touched an always-on node: %+v", d)
 	}
 }

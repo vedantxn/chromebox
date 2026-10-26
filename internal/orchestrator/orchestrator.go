@@ -110,7 +110,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 	if o.auto != nil {
 		go o.auto.run(ctx)
-		log.Printf("orchestrator: autoscaling on (always on: %s, at most %d nodes, cooldown %s, idle stop %s)",
+		log.Printf("orchestrator: autoscaling on (always on: %v, at most %d nodes, cooldown %s, idle stop %s)",
 			o.cfg.Autoscale.AlwaysOn, o.cfg.Autoscale.MaxNodes, o.cfg.Autoscale.Cooldown, o.cfg.Autoscale.IdleStop)
 	}
 	errc := make(chan error, 1)
