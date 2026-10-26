@@ -7,7 +7,7 @@ export const batonRepo = {
 };
 
 /** The SDK on npm. */
-export const sdk = { name: "batonvm", version: "0.3.0", url: "https://www.npmjs.com/package/batonvm" };
+export const sdk = { name: "batonvm", version: "0.3.1", url: "https://www.npmjs.com/package/batonvm" };
 
 /** A file in the Baton repo, on main. */
 export function repoFile(path: string) {
