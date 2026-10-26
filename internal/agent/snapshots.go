@@ -256,7 +256,7 @@ func (a *Agent) resumeVM(w http.ResponseWriter, r *http.Request) {
 	// The guest may have been asleep for days: tell it the time.
 	nn, err := netsetup.ForIndex(req.NetIndex)
 	if err == nil {
-		err = guestctl.SetIdentity(ctx, p.VsockSock(), nn.GuestIP.String()+"/30", nn.TapIP.String(), time.Now())
+		err = guestctl.SetIdentity(ctx, p.VsockSock(), nn.GuestIP.String()+"/30", nn.TapIP.String(), time.Now(), true)
 	}
 	if err != nil {
 		fail(http.StatusInternalServerError, err)

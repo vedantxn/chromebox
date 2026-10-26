@@ -25,6 +25,10 @@ type Request struct {
 	Addr     string `json:"addr,omitempty"`      // set-identity: the guest's address with prefix, e.g. 10.200.1.2/30
 	Gateway  string `json:"gateway,omitempty"`   // set-identity: the guest's default gateway
 	UnixNano int64  `json:"unix_nano,omitempty"` // set-identity: the wall-clock time to set
+	// set-identity: end the DevTools connections the snapshot was taken with.
+	// Only a restore of a running browser (a fork image, a stored session) can
+	// have any; looking costs the guest time, so a clone of a base skips it.
+	DropClients bool `json:"drop_clients,omitempty"`
 }
 
 // Response is the guest agent's answer.
@@ -94,9 +98,10 @@ func callOnce(ctx context.Context, udsPath string, req Request) (Response, error
 }
 
 // SetIdentity gives a freshly restored guest its own address and the correct
-// time.
-func SetIdentity(ctx context.Context, udsPath, addr, gateway string, now time.Time) error {
-	_, err := Call(ctx, udsPath, Request{Cmd: "set-identity", Addr: addr, Gateway: gateway, UnixNano: now.UnixNano()})
+// time, and with dropClients ends the DevTools connections it was snapshotted
+// with (see Request.DropClients).
+func SetIdentity(ctx context.Context, udsPath, addr, gateway string, now time.Time, dropClients bool) error {
+	_, err := Call(ctx, udsPath, Request{Cmd: "set-identity", Addr: addr, Gateway: gateway, UnixNano: now.UnixNano(), DropClients: dropClients})
 	return err
 }
 

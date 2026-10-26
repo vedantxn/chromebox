@@ -25,10 +25,11 @@ import (
 const port = 5000
 
 type request struct {
-	Cmd      string `json:"cmd"`
-	Addr     string `json:"addr"`
-	Gateway  string `json:"gateway"`
-	UnixNano int64  `json:"unix_nano"`
+	Cmd         string `json:"cmd"`
+	Addr        string `json:"addr"`
+	Gateway     string `json:"gateway"`
+	UnixNano    int64  `json:"unix_nano"`
+	DropClients bool   `json:"drop_clients"` // the host restored a browser that had DevTools clients
 }
 
 type response struct {
@@ -109,11 +110,17 @@ func setIdentity(r request) error {
 	// One packet to the gateway makes it learn this guest's address and MAC
 	// (ARP) before any real traffic arrives.
 	go exec.Command("ping", "-c1", "-W1", r.Gateway).Run()
-	if n := dropBridged("/proc"); n > 0 {
-		log.Printf("set-identity: dropped %d DevTools connection(s) from before the snapshot", n)
+	if r.DropClients {
+		if n := dropBridged("/proc", bridgeCgroup); n > 0 {
+			log.Printf("set-identity: dropped %d DevTools connection(s) from before the snapshot", n)
+		}
 	}
 	return nil
 }
+
+// bridgeCgroup lists chrome-bridge's processes: the socat listener and one
+// child per connection.
+const bridgeCgroup = "/sys/fs/cgroup/system.slice/chrome-bridge.service/cgroup.procs"
 
 // dropBridged ends every connection chrome-bridge carries, by killing socat's
 // forked children (one per connection), and returns how many it killed.
@@ -127,13 +134,15 @@ func setIdentity(r request) error {
 // the copy's navigations hang. Killed, the children close their end on
 // 127.0.0.1:9222, Chrome sees the clients leave and lets the targets run.
 // Nobody else is connected yet: the host sends set-identity before it hands
-// the VM out, and a migration, which keeps its clients, never sends it.
+// the VM out, and a migration, which keeps its clients, never sends it. The
+// host asks for this only when the snapshot can hold clients (a fork image or
+// a stored session); a browser made from a base never had any.
 //
 // It reads /proc rather than running pkill: starting a process in the guest
-// costs several milliseconds, and this is on the critical path of every start.
-func dropBridged(proc string) int {
+// costs several milliseconds, and this is on the critical path of a restore.
+func dropBridged(proc, cgroup string) int {
 	n := 0
-	for _, pid := range bridged(proc) {
+	for _, pid := range bridged(proc, cgroup) {
 		if syscall.Kill(pid, syscall.SIGKILL) == nil {
 			n++
 		}
@@ -142,9 +151,15 @@ func dropBridged(proc string) int {
 }
 
 // bridged returns the pids of socat's forked children: socat processes whose
-// parent is socat (the listener, which stays).
-func bridged(proc string) []int {
-	stats, _ := filepath.Glob(filepath.Join(proc, "[0-9]*", "stat"))
+// parent is socat (the listener, which stays). It reads only the processes in
+// chrome-bridge's cgroup, a few files, when it can: reading every process's
+// stat in a just-restored guest costs ~130 ms, each page of it a fault through
+// nested virtualization. Without the cgroup it reads them all.
+func bridged(proc, cgroup string) []int {
+	stats, ok := cgroupStats(proc, cgroup)
+	if !ok {
+		stats, _ = filepath.Glob(filepath.Join(proc, "[0-9]*", "stat"))
+	}
 	comm := map[int]string{}
 	parent := map[int]int{}
 	for _, f := range stats {
@@ -163,6 +178,20 @@ func bridged(proc string) []int {
 		}
 	}
 	return pids
+}
+
+// cgroupStats returns the stat file of every process in cgroup, a
+// cgroup.procs file, or false if it cannot be read.
+func cgroupStats(proc, cgroup string) ([]string, bool) {
+	b, err := os.ReadFile(cgroup)
+	if err != nil {
+		return nil, false
+	}
+	stats := []string{}
+	for _, f := range strings.Fields(string(b)) {
+		stats = append(stats, filepath.Join(proc, f, "stat"))
+	}
+	return stats, true
 }
 
 // parseStat reads the pid, command name and parent pid from /proc/<pid>/stat:

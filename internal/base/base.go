@@ -34,11 +34,12 @@ const (
 	// Index is the network identity the base VM was built with. It is a
 	// reserved address that no real VM uses; clones replace it.
 	Index = netsetup.MaxIndex
-	// Default is the base new browsers are made from. chrome-v2's guest agent
-	// drops the DevTools connections a restored copy wakes up with; chrome-v1
-	// stays on every node, since stored sessions and profiles keep their disks
-	// as the blocks that differ from it.
-	Default = "chrome-v2"
+	// Default is the base new browsers are made from. chrome-v3's guest agent
+	// drops the DevTools connections a restored copy wakes up with, when the
+	// host asks (only for restores of running browsers). chrome-v1 and
+	// chrome-v2 stay on every node: stored sessions and profiles keep their
+	// disks as the blocks that differ from them.
+	Default = "chrome-v3"
 )
 
 // Manifest describes a stored base.
@@ -294,7 +295,7 @@ func Build(ctx context.Context, name, image string, settle time.Duration, sw *ti
 	// Run the identity command once, on the base's own address, so the guest has
 	// already loaded `ip` and friends into its page cache when the snapshot is
 	// taken. Otherwise every clone's first call reads them from disk.
-	if err := guestctl.SetIdentity(ctx, p.VsockSock(), nn.GuestIP.String()+"/30", nn.TapIP.String(), time.Now()); err != nil {
+	if err := guestctl.SetIdentity(ctx, p.VsockSock(), nn.GuestIP.String()+"/30", nn.TapIP.String(), time.Now(), false); err != nil {
 		return err
 	}
 	time.Sleep(settle) // let startup work (and the guest's own caches) finish before freezing it
@@ -445,7 +446,9 @@ func Clone(ctx context.Context, p vm.Paths, name string, netIndex int, sw *timin
 	}
 	sw.Lap("snapshot loaded")
 
-	if err := guestctl.SetIdentity(ctx, p.VsockSock(), nn.GuestIP.String()+"/30", nn.TapIP.String(), time.Now()); err != nil {
+	// A fork image is a running browser, perhaps with clients connected; a
+	// regular base never had any.
+	if err := guestctl.SetIdentity(ctx, p.VsockSock(), nn.GuestIP.String()+"/30", nn.TapIP.String(), time.Now(), IsFork(name)); err != nil {
 		return err
 	}
 	sw.Lap("identity set")

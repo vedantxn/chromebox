@@ -38,9 +38,23 @@ func TestBridged(t *testing.T) {
 		_ = os.MkdirAll(filepath.Join(proc, pid), 0o755)
 		_ = os.WriteFile(filepath.Join(proc, pid, "stat"), []byte(stat), 0o644)
 	}
-	got := bridged(proc)
+	// No cgroup file: every process is read.
+	got := bridged(proc, filepath.Join(proc, "no-such-cgroup"))
 	sort.Ints(got)
 	if !slices.Equal(got, []int{812, 813}) {
 		t.Fatalf("got %v, want [812 813]", got)
+	}
+	// With chrome-bridge's cgroup, only its processes are read: 813 is not in
+	// it here, so it is not found even though it looks like a child.
+	cg := filepath.Join(proc, "cgroup.procs")
+	_ = os.WriteFile(cg, []byte("377\n812\n"), 0o644)
+	if got := bridged(proc, cg); !slices.Equal(got, []int{812}) {
+		t.Fatalf("got %v, want [812]", got)
+	}
+	// An empty cgroup (the bridge is not running) finds nothing and does not
+	// fall back to reading everything.
+	_ = os.WriteFile(cg, nil, 0o644)
+	if got := bridged(proc, cg); len(got) != 0 {
+		t.Fatalf("got %v from an empty cgroup", got)
 	}
 }
