@@ -1,5 +1,5 @@
 import { callerId, unauthorized } from '@/lib/caller';
-import { orch } from '@/lib/orch';
+import { mibOf, msOf, orch } from '@/lib/orch';
 
 // POST /api/v1/sessions/:id/migrate moves the running browser to another
 // machine; connections stay open.
@@ -10,7 +10,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     'POST', `/v1/users/${uid}/sessions/${(await params).id}/migrate`);
   if (!r.data) return Response.json({ error: r.error }, { status: r.status });
   const d = r.data;
-  return Response.json({ from: d.from, to: d.to, pausedMs: d.paused_ms, unreachableMs: d.unreachable_ms,
-    streamMs: d.stream_ms, streamMiB: d.stream_mib, error: d.error },
+  return Response.json({ from: d.from, to: d.to, pausedMs: msOf(d.paused_ms), unreachableMs: msOf(d.unreachable_ms),
+    streamMs: msOf(d.stream_ms), streamMiB: mibOf(d.stream_mib), error: d.error },
     { status: r.status });
 }

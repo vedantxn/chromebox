@@ -36,3 +36,8 @@ export function publicSession(s: OrchSession) {
     connectUrl: s.connect_url,
   };
 }
+
+// Timings go out in whole milliseconds and sizes to a tenth of a MiB: the
+// orchestrator measures to the microsecond, which only clutters a client's log.
+export const msOf = (v: number | undefined) => (v == null ? undefined : Math.round(v));
+export const mibOf = (v: number | undefined) => (v == null ? undefined : Math.round(v * 10) / 10);
