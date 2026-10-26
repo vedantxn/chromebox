@@ -87,6 +87,16 @@ const options = `const session = await baton.sessions.create({
   proxy: { server: "proxy.example.com:8080", username: "me", password: "..." },
 });`;
 
+// The same, from Python (batonvm 0.2.0); also run against production from us-east-1.
+const pyOptions = `session = baton.sessions.create(
+    viewport=(1280, 800),
+    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ...",
+    locale="fr-FR",
+    timezone="Europe/Paris",
+    timeout_minutes=45,
+    proxy={"server": "proxy.example.com:8080", "username": "me", "password": "..."},
+)`;
+
 const optionRows: [string, string][] = [
   ["viewport", "Page size in CSS pixels, 320-3840 by 240-2160."],
   ["userAgent", "Sent with every request and reported by navigator.userAgent."],
@@ -201,6 +211,7 @@ export default function Docs() {
       >
         <div className="space-y-5">
           <CodeBlock code={options} lang="ts" file="options.ts" />
+          <CodeBlock code={pyOptions} lang="python" file="options.py" />
           <Panel>
             <DataTable
               head={["option", "what it does"]}
