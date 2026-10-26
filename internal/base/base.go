@@ -96,6 +96,28 @@ func Delete(name string) error {
 	return os.RemoveAll(dir(name))
 }
 
+// Loaded says whether base name's memory is in RAM, where clones map it.
+func Loaded(name string) bool {
+	_, err := os.Stat(ShmMem(name))
+	return err == nil
+}
+
+// Unload frees the RAM a regular base holds: its memory and device state leave
+// tmpfs and stay on disk, from where Load brings them back when a VM is next
+// made from it. Only for a base no running VM was made from. Fork images live
+// only in RAM, so they are not unloaded but deleted (Delete).
+func Unload(name string) error {
+	if IsFork(name) {
+		return fmt.Errorf("%s is a fork image: delete it instead", name)
+	}
+	for _, f := range []string{"vmstate", "mem"} {
+		if _, err := os.Stat(filepath.Join(dir(name), f)); err != nil {
+			return fmt.Errorf("base %s: no copy on disk, keeping it in RAM: %w", name, err)
+		}
+	}
+	return os.RemoveAll(shm(name))
+}
+
 // Fork turns running VM p into fork image name, and returns how much of its
 // memory was zero pages (punched out of the image after the VM resumed).
 //

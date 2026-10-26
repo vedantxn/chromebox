@@ -47,8 +47,9 @@ type Config struct {
 
 // Agent serves the node API and sends heartbeats.
 type Agent struct {
-	cfg    Config
-	loadMu sync.Mutex // one base load at a time
+	cfg      Config
+	loadMu   sync.Mutex           // one base load (or unload) at a time
+	baseUsed map[string]time.Time // when a VM was last made from each base; loadMu
 
 	outMu    sync.Mutex
 	outgoing map[string]*outgoing // post-copy migrations still serving memory
@@ -68,7 +69,7 @@ type outgoing struct {
 }
 
 func New(cfg Config) *Agent {
-	a := &Agent{cfg: cfg, outgoing: map[string]*outgoing{}, cleaner: newCleaner()}
+	a := &Agent{cfg: cfg, outgoing: map[string]*outgoing{}, cleaner: newCleaner(), baseUsed: map[string]time.Time{}}
 	if p := newPool(); p.size > 0 {
 		a.pool = p
 	}
@@ -83,6 +84,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	go a.sweepJails()
+	go a.unloadIdleBases(ctx)
 	if a.cfg.Orchestrator != "" {
 		go a.heartbeats(ctx)
 	}
@@ -90,6 +92,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		go a.pool.run(ctx, func(name string) error {
 			a.loadMu.Lock()
 			defer a.loadMu.Unlock()
+			a.usedBase(name)
 			return base.Load(name)
 		})
 	}
@@ -144,6 +147,7 @@ func (a *Agent) createVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.loadMu.Lock()
+	a.usedBase(req.Base)
 	err := base.Load(req.Base) // puts the base's memory in RAM the first time; a no-op after
 	a.loadMu.Unlock()
 	if err != nil {
@@ -531,12 +535,15 @@ func (a *Agent) destroy(p vm.Paths) {
 func (a *Agent) Status() api.Status {
 	st := api.Status{Node: a.cfg.Node, AgentPort: portOf(a.cfg.Listen), VCPUs: numCPU()}
 	st.Bases = listBases()
-	// A base this node holds will sit in RAM as soon as a VM is made from it, so
-	// reserve its memory whether or not it is loaded yet. Counting only loaded
-	// bases would make a node look emptier right until its first create.
+	// The base new browsers are made from will sit in RAM as soon as one is, so
+	// reserve its memory whether or not it is loaded yet: counting only loaded
+	// bases would make a node look emptier right until its first create. Any
+	// other base costs RAM only while loaded (sweepBases unloads idle ones).
 	reserve := hostReserveMiB
 	for _, b := range st.Bases {
-		reserve += b.HeldMiB
+		if a.keepsLoaded(b.Name) || base.Loaded(b.Name) {
+			reserve += b.HeldMiB
+		}
 	}
 	st.CapMemMiB = memTotalMiB() - reserve
 	a.outMu.Lock()
