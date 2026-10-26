@@ -91,8 +91,11 @@ func checkPassword(pw, stored string) bool {
 }
 
 // A hash to check against when the address has no account, so a wrong
-// address takes as long to refuse as a wrong password.
-var dummyHash = hashPassword("not a real password")
+// address takes as long to refuse as a wrong password. Made on first use, not
+// at package init: argon2id takes ~28 ms on purpose, and every start of the
+// chromebox binary would pay it, the page-fault handler a migration starts
+// inside its pause among them (the pause went from 212 to 255 ms).
+var dummyHash = sync.OnceValue(func() string { return hashPassword("not a real password") })
 
 // attempts counts recent events per key (failed logins per address, signups
 // per client) in memory. A restart forgets them, which is fine for a limit.
@@ -225,7 +228,7 @@ func (o *Orchestrator) login(w http.ResponseWriter, r *http.Request) {
 	var id, hash string
 	err := o.store.db.QueryRow(`SELECT user_id, hash FROM passwords WHERE email = ?`, in.Email).Scan(&id, &hash)
 	if err != nil {
-		hash = dummyHash
+		hash = dummyHash()
 	}
 	if !checkPassword(in.Password, hash) || err != nil {
 		o.tries.add(key, loginWindow)
