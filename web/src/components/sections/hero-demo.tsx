@@ -91,7 +91,7 @@ export function HeroDemo({
       ref={ref}
       className="rounded-xl bg-stage p-1.5 sm:p-2"
       role="img"
-      aria-label="An agent drives a browser in a Baton session. Halfway through checkout the machine under it is drained: the browser moves to another machine, paused for about 250 ms, and the agent carries on over the same connection. The session ends paused to storage."
+      aria-label="An agent drives a browser in a Baton session. Halfway through checkout the machine under it is drained: the browser moves to another machine, paused for about 225 ms, and the agent carries on over the same connection. The session ends paused to storage."
     >
       <div
         className={cn(

@@ -4,7 +4,7 @@
 
 Every session is a real Chrome in its own Firecracker microVM, restored from a snapshot in about 175 ms. Because a browser is a VM, not a process in a container, Baton can do what most browser infrastructure can't:
 
-- **Live migration.** A running browser moves to another machine mid-session. The agent's CDP connection stays open and its page keeps working; the browser is paused for about 250 ms.
+- **Live migration.** A running browser moves to another machine mid-session. The agent's CDP connection stays open and its page keeps working; the browser is paused for about 225 ms.
 - **Fork.** A logged-in browser becomes N browsers with the same pages, cookies and storage, so N agents continue in parallel as the same user.
 - **Pause and resume.** An idle browser is stored in S3, where it costs nothing, and resumed later on any machine, exactly as it was.
 - **Profiles.** Log in once; every later session starts already logged in.
@@ -61,24 +61,24 @@ with baton.sessions.create() as session, sync_playwright() as p:
 
 ## What it does, measured
 
-Measured 2026-10-26 from a client in us-east-1, on 2 × m8i.large with nested virtualization (slower than the bare metal sandbox providers run on). Full tables and method: [/benchmarks](https://batonvm.vercel.app/benchmarks), raw data in [bench/results/](bench/results/).
+Measured 2026-10-27 from a client in us-east-1, on 2 × m8i.large with nested virtualization (slower than the bare metal sandbox providers run on). Full tables and method: [/benchmarks](https://batonvm.vercel.app/benchmarks), raw data in [bench/results/](bench/results/).
 
 | | p50 | p95 |
 |---|---|---|
 | New browser: request → Chrome answering CDP | **174 ms** | 197 ms |
-| … when creates come back to back (100 in a row) | 231 ms | 267 ms |
+| … when creates come back to back (100 in a row) | 222 ms | 273 ms |
 | … when a warmed-up browser is waiting in the pool | ~4 ms | |
-| Live migration: browser paused while it moves (20 moves) | **255 ms** | 279 ms |
-| … a live CDP client's longest wait during the move | 609 ms | 705 ms |
+| Live migration: browser paused while it moves (20 moves) | **223 ms** | 242 ms |
+| … a live CDP client's longest wait during the move | 595 ms | 669 ms |
 | … disconnects | **0** | |
-| Fork: parent paused | **209 ms** | 212 ms |
-| Fork: 3 copies of a logged-in browser running | 2.6 s | 2.9 s |
+| Fork: parent paused | **201 ms** | 205 ms |
+| Fork: 3 copies of a logged-in browser running | 2.6 s | 2.7 s |
 | Pause a browser to S3 (request → stored and stopped) | 2.1 s | 2.3 s |
-| Resume it, on any machine (request → Chrome answering) | **1.2 s** | 1.4 s |
-| Start a session from a saved, logged-in profile | 0.8 s | 0.9 s |
-| Memory a browser really costs (of 1 GiB): a restore / a fork copy / a warmed-up browser | 61 / ~110 / 230–280 MiB | |
+| Resume it, on any machine (request → Chrome answering) | **1.2 s** | 1.3 s |
+| Start a session from a saved, logged-in profile | 0.7 s | 1.0 s |
+| Memory a browser really costs (of 1 GiB): a restore / a fork copy / a warmed-up browser | 66 / ~105 / 235–275 MiB | |
 
-The first row is 30 creates 2 s apart, measured separately: 16 restored a browser from the snapshot, and the other 14 were handed a warmed-up one. Back to back, the Firecracker processes each node starts ahead of time run out, and a restore starts its own. A warmed-up browser has already loaded a page, which is why it holds more of its own memory.
+The first row is 30 creates 2 s apart, measured separately: 16 restored a browser from the snapshot, and the other 14 were handed a warmed-up one. Back to back, the Firecracker processes each node starts ahead of time run out, and a restore starts its own. A warmed-up browser has already loaded a page, which is why it holds more of its own memory. Keeping one ready beside the others has a cost too: with no warmed-up browser on the nodes, a move pauses for 212 ms.
 
 On [Browser Arena](https://www.browserarena.ai)'s open-source lifecycle benchmark (create, connect, load example.com, release; 100 sessions from us-east-1) a Baton session takes **470 ms**, from 1,198 ms at the start of one day of work on it (releasing in the background, a pool of warmed-up browsers, one round trip for the API). That is 6th of the 13 providers Browser Arena publishes raw results for (theirs, not re-run by us; the fastest is at 156 ms). What is left is mostly Chrome on nested virtualization; [/benchmarks](https://batonvm.vercel.app/benchmarks) says where the rest goes and what it would take.
 
@@ -113,7 +113,7 @@ On Steel's open-source [remote-browser benchmark](https://github.com/steel-dev/b
 
 ## Problems worth reading about
 
-- **Migration downtime from 2.9 s to about 250 ms**: post-copy over userfaultfd, then shaving the pause.
+- **Migration downtime from 2.9 s to about 220 ms**: post-copy over userfaultfd, then shaving the pause.
   - Preparing the target before pausing.
   - Sending disk changes ahead of time.
   - `fallocate` for the snapshot file.
@@ -127,6 +127,7 @@ On Steel's open-source [remote-browser benchmark](https://github.com/steel-dev/b
 - **A CPU cap cost 75 ms per start**: VMs start uncapped and are capped once running.
 - **Forked copies hung for 15 minutes**: a copy woke up with its parent's DevTools clients still connected, as far as Chrome knew, and Playwright's `waitForDebuggerOnStart` made every new tab wait for a client that would never answer. The guest agent now drops them when a copy wakes. Its first version found them by reading every process in `/proc`, which cost every new browser 130 ms (a fresh start went from 186 to 346 ms); now only restores look, and only in the bridge's cgroup.
 - **A new base image filled the RAM disk**: snapshots, resumed sessions and profile images share a tmpfs with the bases, and the old base stayed loaded after the default moved on, so profile saves failed with "no space left on device". The agent now unloads bases no VM is made from.
+- **A password hash slowed every migration**: email sign-in computed an argon2id hash (28 ms, slow on purpose) in a package-level variable, so every start of the binary paid for it, including the page-fault handler a migration starts inside its pause. Pauses went from 212 to 255 ms until the trace showed one package taking 28 ms to initialize. A test now fails if any package takes more than 10 ms.
 - **systemd-logind deleted our snapshot memory** whenever an ssh session ended (`RemoveIPC`), and **an agent restart killed VMs mid-migration** (systemd's `KillMode`).
 
 ## Repository
